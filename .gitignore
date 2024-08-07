@@ -1,0 +1,12 @@
+# Ignore user-specific Xcode files
+fluxBoom.xcodeproj/xcuserdata/
+fluxBoom.xcodeproj/project.xcworkspace/xcuserdata/
+fluxBoom.xcodeproj/project.xcworkspace/xcuserdata/*
+
+# Ignore build products
+build/
+DerivedData/
+
+# Ignore temporary files
+*.xcuserstate
+*.xcuserdatad/

@@ -45,6 +45,11 @@ struct ContentView: View {
     @State private var showApiKeyModal: Bool = false
     @State private var showSavedMessage: Bool = false
     
+    @State private var showPromptDetails: Bool = false
+    @State private var selectedPromptHistory: PromptHistory?
+    @State private var isFirstLaunch: Bool = true
+    @State private var showDeleteConfirmation: Bool = false
+
     let models = ["Flux Pro", "Flux Schnell"]
     let aspectRatios = ["1:1", "16:9", "21:9", "2:3", "3:2", "4:5", "5:4", "9:16", "9:21"]
     let outputFormats = ["webp", "jpg", "png"]
@@ -63,13 +68,18 @@ struct ContentView: View {
                 else {
                     TabView(selection: $selectedTab) {
                         VStack {
-                            if selectedModel == "Flux Pro" {
-                                fluxProInputs
-                            } else if selectedModel == "Flux Schnell" {
-                                fluxSchnellInputs
+                            Text("Settings")
+                                .font(.title2.weight(.bold))
+                                .foregroundStyle(.secondary)
+                            ScrollView(.vertical) {
+                                if selectedModel == "Flux Pro" {
+                                    fluxProInputs
+                                } else if selectedModel == "Flux Schnell" {
+                                    fluxSchnellInputs
+                                }
                             }
-                        }
-                        .padding()
+                        }.padding()
+
                         .tabItem {
                             Text("Settings")
                         }
@@ -92,6 +102,9 @@ struct ContentView: View {
                         .tag(1)
                         
                         VStack {
+                            Text("History")
+                             .font(.title2.weight(.bold))
+                             .foregroundStyle(.secondary)
                             promptHistoryView
                         }
                         .tabItem {
@@ -99,8 +112,8 @@ struct ContentView: View {
                         }
                         .tag(2)
                     }
-                    .tabViewStyle(PageTabViewStyle())
-                    .indexViewStyle(PageIndexViewStyle(backgroundDisplayMode: .never))
+                    .tabViewStyle(.page(indexDisplayMode: isKeyboardVisible ? .never : .automatic))
+                    .indexViewStyle(PageIndexViewStyle(backgroundDisplayMode: .automatic))
                 }
                 Spacer()
             }
@@ -117,8 +130,13 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showApiKeyModal) {
-            apiKeyModal
+            apiKeyModal.background(Material.ultraThin.opacity(0.6)).edgesIgnoringSafeArea(.all)
         }
+        .sheet(item: $selectedPromptHistory) { promptHistory in
+                    promptDetailsSheet(promptHistory: promptHistory)
+                        .presentationDetents([.fraction(0.5)])
+                        .background(Material.ultraThin.opacity(0.5))
+                }
         .overlay(
             Group {
                 if showSavedMessage {
@@ -169,27 +187,34 @@ struct ContentView: View {
 
     var apiKeyModal: some View {
         VStack {
-            Text("Replicate API Key")
-                .font(.headline)
-            TextField("API Key", text: $apiKey)
-                .textFieldStyle(RoundedBorderTextFieldStyle())
-                .padding()
-            Button(action: {
-                saveApiKey()
-                withAnimation {
-                    showSavedMessage = true
-                }
-                showApiKeyModal = false
-            }) {
-                Text("Save")
+            Spacer()
+            VStack {
+                Text("Replicate API Key")
+                    .font(.headline)
+                TextField("API Key", text: $apiKey)
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
                     .padding()
-                    .foregroundColor(.white)
-                    .background(apiKey.isEmpty ? Color.gray : Color.purple)
-                    .cornerRadius(10)
+                Button(action: {
+                    saveApiKey()
+                    withAnimation {
+                        showSavedMessage = true
+                    }
+                    showApiKeyModal = false
+                }) {
+                    Text("Save")
+                        .padding()
+                        .foregroundColor(.white)
+                        .background(apiKey.isEmpty ? Color.gray : Color.purple)
+                        .cornerRadius(10)
+                }
+                .disabled(apiKey.isEmpty)
             }
-            .disabled(apiKey.isEmpty)
+            .padding()
+            Spacer()
         }
-        .padding()
+        .background(Material.ultraThick)
+        .presentationDetents([.fraction(0.5)])
+        .edgesIgnoringSafeArea(.all)
     }
     
     var modelSelector: some View {
@@ -306,9 +331,14 @@ struct ContentView: View {
     var fluxSchnellInputs: some View {
         Group {
             HStack {
-                Text("Seed:")
-                TextField("Random seed (optional)", value: $seed, formatter: NumberFormatter())
+                Text("Seed (Optional):")
+                TextField("Random", value: $seed, formatter: NumberFormatter())
+                    .keyboardType(.decimalPad)
                     .textFieldStyle(RoundedBorderTextFieldStyle())
+                    .frame(width: 150)
+                    .font(.title2)
+                    .padding(.trailing, 10)
+                    .focused($isPromptFocused)
             }
             
             Picker("Output Format", selection: $outputFormat) {
@@ -328,35 +358,181 @@ struct ContentView: View {
     }
     
     var promptHistoryView: some View {
-        List {
-            ForEach(promptHistory) { history in
-                VStack(alignment: .leading) {
-                    Text("Model: \(history.model)")
-                    Text("Prompt: \(history.prompt)")
-                    Text("Guidance: \(history.guidance)")
-                    Text("Aspect Ratio: \(history.aspectRatio)")
-                    Text("Steps: \(history.steps)")
-                    Text("Interval: \(history.interval)")
-                    Text("Safety Tolerance: \(history.safetyTolerance)")
-                    Text("Seed: \(history.seed ?? 0)")
-                    Text("Output Format: \(history.outputFormat)")
-                    Text("Output Quality: \(history.outputQuality)")
-                    Text("Disable Safety Checker: \(history.disableSafetyChecker ? "Yes" : "No")")
-                }
-                .padding()
-            }
-        }
-        .padding()
-    }
+           List {
+               ForEach(promptHistory) { history in
+                   VStack(alignment: .leading) {
+                       Text(history.prompt)
+                           .font(.headline)
+                       Text("\(history.model) • \(history.timestamp.formatted())")
+                           .font(.subheadline)
+                           .foregroundColor(.secondary)
+                   }.transition(.scale(0))
+                   .onTapGesture {
+                       selectedPromptHistory = history
+                       if isFirstLaunch {
+                           DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                               isFirstLaunch = false
+                           }
+                       }
+                   }
+               }
+           }
+           .scrollContentBackground(.hidden)
+           .background(.clear)
+           .padding([.leading, .trailing, .bottom])
+       }
     
+    func deletePromptHistory(_ history: PromptHistory) {
+         modelContext.delete(history)
+         try? modelContext.save()
+     }
+    
+    func promptDetailsSheet(promptHistory: PromptHistory) -> some View {
+           let numberFormatter: NumberFormatter = {
+               let formatter = NumberFormatter()
+               formatter.numberStyle = .decimal
+               formatter.maximumFractionDigits = 2
+               return formatter
+           }()
+        @State var opacity = 1
+           
+           return VStack(alignment: .leading, spacing: 10) {
+               if showDeleteConfirmation {
+                   VStack {
+                       Spacer()
+                       Text("Are you sure you want to delete this prompt?")
+                           .font(.headline)
+                           .padding()
+                       HStack {
+                           Button(action: {
+                               withAnimation(.bouncy) {
+                                   showDeleteConfirmation = false
+                               }
+                           }) {
+                               Text("Cancel")
+                                   .padding()
+                                   .frame(maxWidth: .infinity)
+                                   .background(Color.gray)
+                                   .foregroundColor(.white)
+                                   .cornerRadius(10)
+                           }
+                           Button(action: {
+                               withAnimation(.snappy) {
+                                   deletePromptHistory(promptHistory)
+                                   selectedPromptHistory = nil
+                               }
+                           }) {
+                               Text("Delete")
+                                   .padding()
+                                   .frame(maxWidth: .infinity)
+                                   .background(Color.red)
+                                   .foregroundColor(.white)
+                                   .cornerRadius(10)
+                           }
+                       }                                       
+                       Spacer()
+                   }
+               } else {
+                   HStack {
+                       Text("Prompt Details")
+                           .font(.headline)
+                           .padding(.top)
+                       Spacer()
+                       Button(action: {
+                           withAnimation {
+                               showDeleteConfirmation = true
+                           }
+                       }) {
+                           Image(systemName: "trash")
+                               .foregroundColor(.white)
+                               .padding(10)
+                               .background(Color.red.opacity(0.6))
+                               .clipShape(Circle())
+                       }
+                   }
+                   Divider()
+                   Text("Model: \(promptHistory.model)")
+                       .font(.subheadline)
+                   Text("Prompt: \(promptHistory.prompt)")
+                       .font(.subheadline)
+                   Text("Aspect Ratio: \(promptHistory.aspectRatio)")
+                       .font(.subheadline)
+                   
+                   if promptHistory.model == "Flux Pro" {
+                       Text("Guidance: \(numberFormatter.string(for: promptHistory.guidance) ?? "")")
+                           .font(.subheadline)
+                       Text("Steps: \(Int(promptHistory.steps))")
+                           .font(.subheadline)
+                       Text("Interval: \(numberFormatter.string(for: promptHistory.interval) ?? "")")
+                           .font(.subheadline)
+                       Text("Safety Tolerance: \(Int(promptHistory.safetyTolerance))")
+                           .font(.subheadline)
+                   } else if promptHistory.model == "Flux Schnell" {
+                       if let seed = promptHistory.seed {
+                           Text("Seed: \(seed)")
+                               .font(.subheadline)
+                       }
+                       Text("Output Format: \(promptHistory.outputFormat)")
+                           .font(.subheadline)
+                       if promptHistory.outputFormat != "png" {
+                           Text("Output Quality: \(Int(promptHistory.outputQuality))")
+                               .font(.subheadline)
+                       }
+                       Text("Disable Safety Checker: \(promptHistory.disableSafetyChecker ? "Yes" : "No")")
+                           .font(.subheadline)
+                   }
+                   
+                   Button(action: {
+                       withAnimation {
+                           loadPromptHistory(promptHistory)
+                           selectedPromptHistory = nil
+                           selectedTab = 1
+                       }
+                   }) {
+                       Text("Load Prompt")
+                           .padding()
+                           .frame(maxWidth: .infinity)
+                           .background(Color.purple)
+                           .foregroundColor(.white)
+                           .cornerRadius(10)
+                   }
+                   .padding(.top)
+                   Spacer()
+               }
+           }
+           .padding()
+           .presentationDetents([.fraction(0.5)])
+       }
+
+
+    func loadPromptHistory(_ history: PromptHistory) {
+        selectedModel = history.model
+        prompt = history.prompt
+        aspectRatio = history.aspectRatio
+        
+        if history.model == "Flux Pro" {
+            guidance = history.guidance
+            steps = history.steps
+            interval = history.interval
+            safetyTolerance = history.safetyTolerance
+        } else if history.model == "Flux Schnell" {
+            seed = history.seed
+            outputFormat = history.outputFormat
+            outputQuality = history.outputQuality
+            disableSafetyChecker = history.disableSafetyChecker
+        }
+    }
+
+
     func sliderInput(title: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double) -> some View {
         VStack(alignment: .leading) {
             Text(title)
                 .foregroundColor(.primary)
-                .font(.title2)
+                .font(.title3)
             HStack(alignment: .center) {
-            CustomSlider(value: value, range: range, step: step)
-        }
+                CustomSlider(value: value, range: range, step: step)
+                    .focused($isPromptFocused)
+            }
         }
     }
     
@@ -377,8 +553,7 @@ struct ContentView: View {
     }
     
     func validateApiKey(_ key: String) -> Bool {
-        // Placeholder validation logic for the API key
-        return !key.isEmpty && key.count >= 10 // Example: minimum length
+        return !key.isEmpty && key.count >= 10
     }
     
     func generateImage() {
@@ -537,8 +712,7 @@ struct ContentView: View {
                     }
                 }
                 .frame(height: 44)
-                .background(Color.clear)
-                .transition(.move(edge: .bottom))
+                .background(Material.ultraThick.opacity(0.6))
             }
         }
     }
@@ -549,6 +723,7 @@ struct ContentView_Previews: PreviewProvider {
         ContentView()
     }
 }
+
 
 struct CustomSlider: View {
     @Binding var value: Double
@@ -563,11 +738,14 @@ struct CustomSlider: View {
                 TextField("", value: $value, formatter: numberFormatter)
                     .keyboardType(.decimalPad)
                     .textFieldStyle(RoundedBorderTextFieldStyle())
-                    .frame(width: 50)
+                    .frame(width: 55)
                     .font(.title2)
                     .padding(.trailing, 10)
                     .onChange(of: value) { newValue in
                         value = clampValue(newValue)
+                    }
+                    .onTapGesture {
+                        dismissKeyboard() // Dismiss the keyboard when tapping outside
                     }
 
                 
@@ -606,6 +784,10 @@ struct CustomSlider: View {
         }
     }
     
+    func dismissKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
+    
     private func xOffset(in geometry: GeometryProxy) -> CGFloat {
         let clampedValue = clampValue(value)
         let width = geometry.size.width
@@ -639,9 +821,6 @@ struct CustomSlider_Previews: PreviewProvider {
         CustomSlider(value: $sliderValue, range: 0...100, step: 1)
     }
 }
-
-
-
 
 struct CombinedSymbolView: View {
     var isAnimated: Bool
@@ -720,11 +899,6 @@ struct CombinedSymbolView_Previews: PreviewProvider {
     }
 }
 
-
-
-
-
-
 extension Publishers {
     static var keyboardHeight: AnyPublisher<CGFloat, Never> {
         let willShow = NotificationCenter.default.publisher(for: UIApplication.keyboardWillShowNotification)
@@ -753,6 +927,7 @@ import UniformTypeIdentifiers
 struct PhotoGalleryView: View {
     @State var generatedImages: [GeneratedImage]
     @Environment(\.modelContext) var modelContext: ModelContext
+    @Environment(\.dismiss) var dismiss
     
     var body: some View {
         ScrollView {
@@ -765,12 +940,25 @@ struct PhotoGalleryView: View {
                                 .aspectRatio(contentMode: .fill)
                                 .frame(width: 100, height: 100)
                                 .clipped()
+                                .cornerRadius(10)
                         }
                     }
                 }
             }
         }
         .navigationTitle("Gallery")
+        .navigationBarBackButtonHidden()
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button(action: {
+                    dismiss()
+                }) {
+                    Image(systemName: "chevron.left")
+                        .foregroundColor(.primary)
+                }
+            }
+        }
+        .tint(.primary)
         .padding()
     }
 }
@@ -829,6 +1017,18 @@ struct ImageDetailView: View {
         )
         .animation(.easeInOut, value: showingSaveStatus)
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden()
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button(action: {
+                    dismiss()
+                }) {
+                    Image(systemName: "chevron.left")
+                        .foregroundColor(.primary)
+                }
+            }
+        }
+        .tint(.primary)
     }
     
     func shareImage() {
@@ -1058,6 +1258,7 @@ class NetworkManager {
 
         task.resume()
     }
+    
     func getPredictionOutput(predictionId: String, model: String, context: ModelContext, completion: @escaping (Result<UIImage, Error>) -> Void) {
         let url = URL(string: "https://api.replicate.com/v1/predictions/\(predictionId)")!
         guard let apiKey = KeychainHelper.shared.retrieve(key: "apiKey") else {
@@ -1071,13 +1272,17 @@ class NetworkManager {
         let task = URLSession.shared.dataTask(with: request) { data, response, error in
             if let error = error {
                 print("Get Prediction Output Error: \(error.localizedDescription)")
-                completion(.failure(error))
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                }
                 return
             }
 
             guard let data = data, let httpResponse = response as? HTTPURLResponse else {
                 print("Get Prediction Output: No data or invalid response")
-                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data received"])))
+                DispatchQueue.main.async {
+                    completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data received"])))
+                }
                 return
             }
 
@@ -1087,51 +1292,51 @@ class NetworkManager {
                 if let jsonResponse = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] {
                     print("Get Prediction Output Response JSON: \(jsonResponse)")
 
+                    let outputUrlString: String?
                     if model == "Flux Schnell" {
-                        // Handle array of URLs
-                        if let outputArray = jsonResponse["output"] as? [String],
-                           let outputUrlString = outputArray.first,
-                           let imageUrl = URL(string: outputUrlString),
-                           let imageData = try? Data(contentsOf: imageUrl),
-                           let image = UIImage(data: imageData) {
+                        outputUrlString = (jsonResponse["output"] as? [String])?.first
+                    } else {
+                        outputUrlString = jsonResponse["output"] as? String
+                    }
 
-                            DispatchQueue.main.async {
-                                let newImage = GeneratedImage(imageData: imageData)
-                                context.insert(newImage)
-                                try? context.save()
-                                completion(.success(image))
+                    if let outputUrlString = outputUrlString,
+                       let imageUrl = URL(string: outputUrlString) {
+                        
+                        DispatchQueue.global(qos: .userInitiated).async {
+                            if let imageData = try? Data(contentsOf: imageUrl),
+                               let image = UIImage(data: imageData) {
+                                
+                                DispatchQueue.main.async {
+                                    let newImage = GeneratedImage(imageData: imageData)
+                                    context.insert(newImage)
+                                    try? context.save()
+                                    completion(.success(image))
+                                }
+                            } else {
+                                DispatchQueue.main.async {
+                                    self.handleOutputError(jsonResponse, completion: completion)
+                                }
                             }
-                        } else {
-                            self.handleOutputError(jsonResponse, completion: completion)
                         }
                     } else {
-                        // Handle single URL
-                        if let outputUrlString = jsonResponse["output"] as? String,
-                           let imageUrl = URL(string: outputUrlString),
-                           let imageData = try? Data(contentsOf: imageUrl),
-                           let image = UIImage(data: imageData) {
-
-                            DispatchQueue.main.async {
-                                let newImage = GeneratedImage(imageData: imageData)
-                                context.insert(newImage)
-                                try? context.save()
-                                completion(.success(image))
-                            }
-                        } else {
+                        DispatchQueue.main.async {
                             self.handleOutputError(jsonResponse, completion: completion)
                         }
                     }
                 } else {
-                    completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Unable to parse output JSON"])))
+                    DispatchQueue.main.async {
+                        completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Unable to parse output JSON"])))
+                    }
                 }
             } catch {
-                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Output JSON parsing error: \(error.localizedDescription)"])))
+                DispatchQueue.main.async {
+                    completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Output JSON parsing error: \(error.localizedDescription)"])))
+                }
             }
         }
 
         task.resume()
     }
-
     func handleOutputError(_ jsonResponse: [String: Any], completion: @escaping (Result<UIImage, Error>) -> Void) {
         if let errorMessage = jsonResponse["detail"] as? String {
             completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMessage])))
@@ -1173,4 +1378,15 @@ class NetworkManager {
     }
     
     
+}
+
+extension UINavigationController: UIGestureRecognizerDelegate {
+    override open func viewDidLoad() {
+        super.viewDidLoad()
+        interactivePopGestureRecognizer?.delegate = self
+    }
+
+    public func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        return viewControllers.count > 1
+    }
 }

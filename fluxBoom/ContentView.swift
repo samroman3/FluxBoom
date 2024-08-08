@@ -8,6 +8,7 @@
 import SwiftUI
 import SwiftData
 import Combine
+import UIKit
 
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext: ModelContext
@@ -72,6 +73,12 @@ struct ContentView: View {
                                 .font(.title2.weight(.bold))
                                 .foregroundStyle(.secondary)
                             ScrollView(.vertical) {
+                                Picker("Aspect Ratio", selection: $aspectRatio) {
+                                    ForEach(aspectRatios, id: \.self) {
+                                        Text($0)
+                                    }
+                                }
+                                .pickerStyle(.wheel)
                                 if selectedModel == "Flux Pro" {
                                     fluxProInputs
                                 } else if selectedModel == "Flux Schnell" {

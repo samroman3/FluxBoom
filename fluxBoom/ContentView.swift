@@ -11,76 +11,48 @@ import Combine
 import UIKit
 
 struct DrawingView: View {
-    @State private var currentPath = Path()
-    @State private var paths: [Path] = []
-    let onDrawEnd: (UIImage) -> Void
+    @Binding var lines: [Line]
+    let imageSize: CGSize
+    let onDrawEnd: () -> Void
 
     var body: some View {
-        ZStack {
-            Canvas { context, size in
-                for path in paths {
-                    context.stroke(path, with: .color(.black), lineWidth: 8)
+        GeometryReader { geometry in
+            Path { path in
+                for line in lines {
+                    let scaledPoints = line.points.map { point in
+                        CGPoint(x: point.x * geometry.size.width / imageSize.width,
+                                y: point.y * geometry.size.height / imageSize.height)
+                    }
+                    path.addLines(scaledPoints)
                 }
-                context.stroke(currentPath, with: .color(.black), lineWidth: 8)
             }
+            .stroke(Color.white, lineWidth: 5)
+            .background(Color.black.opacity(0.5))
             .gesture(
                 DragGesture(minimumDistance: 0, coordinateSpace: .local)
                     .onChanged { value in
-                        let newPoint = value.location
-                        if currentPath.isEmpty {
-                            currentPath.move(to: newPoint)
+                        let position = CGPoint(
+                            x: value.location.x * imageSize.width / geometry.size.width,
+                            y: value.location.y * imageSize.height / geometry.size.height
+                        )
+                        if value.translation == .zero {
+                            lines.append(Line(points: [position]))
                         } else {
-                            currentPath.addLine(to: newPoint)
+                            guard let lastIndex = lines.indices.last else { return }
+                            lines[lastIndex].points.append(position)
                         }
                     }
                     .onEnded { _ in
-                        paths.append(currentPath)
-                        currentPath = Path()
-                        saveDrawing()
+                        onDrawEnd()
                     }
             )
         }
     }
-
-    func saveDrawing() {
-        // Convert drawing to UIImage
-        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 300, height: 300))
-        let maskImage = renderer.image { ctx in
-            let context = ctx.cgContext
-            context.setFillColor(UIColor.clear.cgColor)
-            context.fill(CGRect(x: 0, y: 0, width: 300, height: 300))
-            context.setStrokeColor(UIColor.black.cgColor)
-            context.setLineWidth(8)
-            for path in paths {
-                context.addPath(path.cgPath)
-            }
-            context.strokePath()
-        }
-        onDrawEnd(maskImage)
-    }
 }
 
-extension Path {
-    var cgPath: CGPath {
-        let path = UIBezierPath(cgPath: CGMutablePath())
-        forEach { element in
-            switch element {
-            case .move(let to):
-                path.move(to: to)
-            case .line(let to):
-                path.addLine(to: to)
-            case .quadCurve(let to, let control):
-                path.addQuadCurve(to: to, controlPoint: control)
-            case .curve(let to, let control1, let control2):
-                path.addCurve(to: to, controlPoint1: control1, controlPoint2: control2)
-            case .closeSubpath:
-                path.close()
-            }
-        }
-        return path.cgPath
-    }
+struct Line {
+    var points: [CGPoint]
 }
-
 
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext: ModelContext
@@ -104,8 +76,10 @@ struct ContentView: View {
     
     // Flux Dev Inpainting specific inputs
     @State private var imageUrl: String = ""
-    @State private var maskImage: UIImage? = nil
+    @State private var selectedImage: UIImage?
+    @State private var maskImage: UIImage?
     @State private var isDrawingMode: Bool = false
+    @State private var lines: [Line] = []
     
     @State private var isLoading: Bool = false
     @State private var predictionStatus: String = ""
@@ -133,6 +107,7 @@ struct ContentView: View {
     let outputFormats = ["webp", "jpg", "png"]
     
     @State private var selectedTab: Int = 1 // Default to the second tab (Generate)
+    @State private var showImagePicker: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -216,6 +191,9 @@ struct ContentView: View {
                 isKeyboardVisible = height > 0
             }
         }
+        .sheet(isPresented: $showImagePicker) {
+            ImagePicker(image: $selectedImage)
+        }
         .sheet(isPresented: $showApiKeyModal) {
             apiKeyModal.background(Material.ultraThin.opacity(0.6)).edgesIgnoringSafeArea(.all)
         }
@@ -249,37 +227,87 @@ struct ContentView: View {
     
     var devInpaintingView: some View {
         VStack {
-            Text("Inpainting Mode").font(.headline)
-            
-            if let mask = maskImage {
-                Image(uiImage: mask)
-                    .resizable()
-                    .scaledToFit()
-                    .overlay(Text("Current Mask"))
-                    .padding()
-            } else {
-                Text("Draw a mask on the image").font(.subheadline)
-            }
-            
-            Button(action: {
-                isDrawingMode.toggle()
-            }) {
-                Text(isDrawingMode ? "Finish Drawing" : "Draw Mask")
-                    .font(.headline)
-                    .foregroundColor(.white)
-                    .padding()
-                    .background(isDrawingMode ? Color.red : Color.green)
-                    .cornerRadius(10)
-            }
-
-            if isDrawingMode {
-                DrawingView(onDrawEnd: { mask in
-                    maskImage = mask
-                })
+            if let image = selectedImage {
+                ZStack {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(height: 300)
+                    
+                    if isDrawingMode {
+                        DrawingView(lines: $lines, imageSize: image.size) {
+                            Task {
+                                await updateMaskImage()
+                            }
+                        }
+                    }
+                    
+                    if let mask = maskImage {
+                        Image(uiImage: mask)
+                            .resizable()
+                            .scaledToFit()
+                            .opacity(0.5)
+                            .blendMode(.plusLighter)
+                    }
+                }
                 .frame(height: 300)
-                .background(Color.gray.opacity(0.3))
+                .overlay(
+                    HStack {
+                        Button(action: {
+                            isDrawingMode.toggle()
+                        }) {
+                            Image(systemName: isDrawingMode ? "paintbrush.fill" : "paintbrush")
+                                .foregroundColor(.purple)
+                                .padding(8)
+                                .background(Color.white.opacity(0.8))
+                                .clipShape(Circle())
+                        }
+                        
+                        Button(action: clearMask) {
+                            Image(systemName: "trash")
+                                .foregroundColor(.red)
+                                .padding(8)
+                                .background(Color.white.opacity(0.8))
+                                .clipShape(Circle())
+                        }
+                    }
+                    .padding(8),
+                    alignment: .topTrailing
+                )
+            } else {
+                Button(action: {
+                    showImagePicker = true
+                }) {
+                    VStack {
+                        Image(systemName: "photo")
+                            .font(.largeTitle)
+                        Text("Upload Image")
+                    }
+                    .foregroundColor(.purple)
+                    .frame(height: 200)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.purple.opacity(0.1))
+                    .cornerRadius(10)
+                }
+                .padding()
             }
         }
+    }
+
+    @MainActor
+    func updateMaskImage() async {
+        let renderer = ImageRenderer(content:
+            DrawingView(lines: .constant(lines), imageSize: selectedImage?.size ?? .zero) {}
+        )
+        renderer.scale = UIScreen.main.scale
+        if let uiImage = renderer.uiImage {
+            maskImage = uiImage
+        }
+    }
+
+    func clearMask() {
+        lines.removeAll()
+        maskImage = nil
     }
 
     var fluxProInputs: some View {
@@ -696,12 +724,14 @@ struct ContentView: View {
                }
                parameters["disable_safety_checker"] = disableSafetyChecker
            case "Flux Dev Inpainting":
+               guard let image = selectedImage, let mask = maskImage else {
+                   errorMessage = "Please upload an image and create a mask"
+                   return
+               }
+               parameters["image"] = encodeImage(image)
+               parameters["mask"] = encodeImage(mask)
                if let seed = seed {
                    parameters["seed"] = seed
-               }
-               parameters["image"] = imageUrl
-               if let mask = maskImage?.pngData()?.base64EncodedString() {
-                   parameters["mask"] = mask
                }
                parameters["output_format"] = outputFormat
            default:
@@ -838,6 +868,43 @@ struct ContentView: View {
                 .frame(height: 44)
                 .background(Material.ultraThick.opacity(0.6))
             }
+        }
+    }
+    
+    func encodeImage(_ image: UIImage) -> String {
+        guard let imageData = image.jpegData(compressionQuality: 0.8) else { return "" }
+        return imageData.base64EncodedString()
+    }
+}
+
+struct ImagePicker: UIViewControllerRepresentable {
+    @Binding var image: UIImage?
+    @Environment(\.presentationMode) private var presentationMode
+
+    func makeUIViewController(context: UIViewControllerRepresentableContext<ImagePicker>) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: UIViewControllerRepresentableContext<ImagePicker>) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
+        let parent: ImagePicker
+
+        init(_ parent: ImagePicker) {
+            self.parent = parent
+        }
+
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
+            if let image = info[.originalImage] as? UIImage {
+                parent.image = image
+            }
+            parent.presentationMode.wrappedValue.dismiss()
         }
     }
 }
@@ -1477,12 +1544,12 @@ class NetworkManager {
     static let shared = NetworkManager()
     private init() {}
 
-    private let baseUrl = "https://api.replicate.com/v1/models/"
+    private let baseUrl = "https://api.replicate.com/v1/predictions"
 
     private let modelEndpoints = [
-        "Flux Pro": "black-forest-labs/flux-pro/predictions",
-        "Flux Schnell": "black-forest-labs/flux-schnell/predictions",
-        "Flux Dev Inpainting": "zsxkib/flux-dev-inpainting/predictions"
+        "Flux Pro": "black-forest-labs/flux-pro:7a0ae8c0ea9e5a8118e28e2bb70af055a9df57b62bf9e8b0e4e31362201cf3bc",
+        "Flux Schnell": "black-forest-labs/flux-schnell:7e8e3a1f7a3a7d9f6c6e4f3a3d3a3d3a3d3a3d3a3d3a3d3a3d3a3d3a3d3a",
+        "Flux Dev Inpainting": "stability-ai/stable-diffusion-inpainting:c28b92a7ecd66eee4aefcd8a94eb9e7f6c3805d5f06038165407fb5cb355ba67"
     ]
 
     var currentPredictionId: String?
@@ -1494,18 +1561,21 @@ class NetworkManager {
             return
         }
 
-        guard let endpoint = modelEndpoints[model],
-              let url = URL(string: baseUrl + endpoint) else {
-            completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid model or URL"])))
+        guard let modelVersion = modelEndpoints[model] else {
+            completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid model"])))
             return
         }
 
+        let url = URL(string: baseUrl)!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        let finalParameters: [String: Any] = ["input": parameters]
+        let finalParameters: [String: Any] = [
+            "version": modelVersion,
+            "input": parameters
+        ]
 
         guard let httpBody = try? JSONSerialization.data(withJSONObject: finalParameters, options: []) else {
             completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to serialize parameters"])))

@@ -1077,7 +1077,7 @@ struct ContentView: View {
             do {
                 let json = try JSONSerialization.jsonObject(with: data, options: [])
                 if let dict = json as? [String: Any], let imageUrl = (dict["data"] as? [String: Any])?["url"] as? String {
-                    print("Image URL: \(imageUrlL)")
+                    print("Image URL: \(imageUrl)")
                     completion(.success(imageUrl))
                 } else {
                     completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Unexpected response format"])))

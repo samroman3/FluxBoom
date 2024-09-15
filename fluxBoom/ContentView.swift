@@ -12,34 +12,39 @@ import UIKit
 
 struct DrawingView: View {
     @Binding var lines: [Line]
-    let imageSize: CGSize
-    let onDrawEnd: () -> Void
+    var imageSize: CGSize
+    var onDrawEnd: () -> Void
+    @Binding var isEraserActive: Bool
 
     var body: some View {
         GeometryReader { geometry in
-            Path { path in
-                for line in lines {
-                    let scaledPoints = line.points.map { point in
-                        CGPoint(x: point.x * geometry.size.width / imageSize.width,
-                                y: point.y * geometry.size.height / imageSize.height)
+            ZStack {
+                Color.clear
+
+                // Draw existing lines
+                ForEach(lines) { line in
+                    Path { path in
+                        guard let firstPoint = line.points.first else { return }
+                        path.move(to: firstPoint)
+                        for point in line.points.dropFirst() {
+                            path.addLine(to: point)
+                        }
                     }
-                    path.addLines(scaledPoints)
+                    .stroke(line.color, lineWidth: line.lineWidth)
+                    .blendMode(.normal)
                 }
             }
-            .stroke(Color.white, lineWidth: 5)
-            .background(Color.black.opacity(0.5))
             .gesture(
-                DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                DragGesture()
                     .onChanged { value in
-                        let position = CGPoint(
-                            x: value.location.x * imageSize.width / geometry.size.width,
-                            y: value.location.y * imageSize.height / geometry.size.height
-                        )
-                        if value.translation == .zero {
-                            lines.append(Line(points: [position]))
+                        let newPoint = value.location
+                        if isEraserActive {
                         } else {
-                            guard let lastIndex = lines.indices.last else { return }
-                            lines[lastIndex].points.append(position)
+                            if lines.isEmpty || value.predictedEndLocation != value.location {
+                                lines.append(Line(points: [newPoint], color: .black, lineWidth: 20))
+                            } else {
+                                lines[lines.count - 1].points.append(newPoint)
+                            }
                         }
                     }
                     .onEnded { _ in
@@ -50,9 +55,14 @@ struct DrawingView: View {
     }
 }
 
-struct Line {
+
+struct Line: Identifiable {
+    var id = UUID()
     var points: [CGPoint]
+    var color: Color
+    var lineWidth: CGFloat
 }
+
 
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext: ModelContext
@@ -75,11 +85,16 @@ struct ContentView: View {
     @State private var disableSafetyChecker: Bool = false
     
     // Flux Dev Inpainting specific inputs
-    @State private var imageUrl: String = ""
     @State private var selectedImage: UIImage?
     @State private var maskImage: UIImage?
+    @State private var fetchedImage: UIImage?
+    @State private var isFetchingImage: Bool = false
+    @State private var imageUrl: String = ""
     @State private var isDrawingMode: Bool = false
+    @State private var isEraserActive: Bool = false
     @State private var lines: [Line] = []
+
+    @FocusState private var isPromptFocused: Bool
     
     @State private var isLoading: Bool = false
     @State private var predictionStatus: String = ""
@@ -90,9 +105,9 @@ struct ContentView: View {
     @State private var isSymbolAtFinalPosition: Bool = false
     
     @State private var isKeyboardVisible: Bool = false
-    @FocusState private var isPromptFocused: Bool
     
     @State private var apiKey: String = ""
+    @State private var imgbbApiKey: String = ""
     @State private var isApiKeyValid: Bool = true
     @State private var showApiKeyModal: Bool = false
     @State private var showSavedMessage: Bool = false
@@ -101,6 +116,7 @@ struct ContentView: View {
     @State private var selectedPromptHistory: PromptHistory?
     @State private var isFirstLaunch: Bool = true
     @State private var showDeleteConfirmation: Bool = false
+    @State private var showClearConfirmation: Bool = false
 
     let models = ["Flux Pro", "Flux Schnell", "Flux Dev Inpainting"]
     let aspectRatios = ["1:1", "16:9", "21:9", "2:3", "3:2", "4:5", "5:4", "9:16", "9:21"]
@@ -145,21 +161,25 @@ struct ContentView: View {
                         .tag(0)
                         
                         VStack {
-                            Spacer()
-                            if selectedModel == "Flux Dev Inpainting" {
-                                devInpaintingView
-                            }
-                            promptInput
-                            generateButton
+                                Spacer()
+                                if selectedModel == "Flux Dev Inpainting" {
+                                    devInpaintingView
+                                }
+                                if !isDrawingMode {
+                                    promptInput
+                                    generateButton
+                                        .padding(.top)
+                                }
+                            
                             if !errorMessage.isEmpty {
-                                Text("Error: \(errorMessage)")
-                                    .foregroundColor(.red)
-                                    .padding()
-                            }
-                            Spacer()
+                                    Text("Error: \(errorMessage)")
+                                        .foregroundColor(.red)
+                                        .padding()
+                                }
                         }
                         .tabItem {
                             Text("Generate")
+                            
                         }
                         .tag(1)
                         
@@ -179,6 +199,8 @@ struct ContentView: View {
                 }
                 Spacer()
             }
+            .hideKeyboardOnTap()
+
             .navigationDestination(isPresented: $navigateToGallery) {
                 PhotoGalleryView(generatedImages: generatedImages, modelContext: _modelContext)
             }
@@ -192,7 +214,7 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showImagePicker) {
-            ImagePicker(image: $selectedImage)
+            ImagePicker(image: $selectedImage, errorMessage: $errorMessage)
         }
         .sheet(isPresented: $showApiKeyModal) {
             apiKeyModal.background(Material.ultraThin.opacity(0.6)).edgesIgnoringSafeArea(.all)
@@ -226,88 +248,194 @@ struct ContentView: View {
     }
     
     var devInpaintingView: some View {
-        VStack {
-            if let image = selectedImage {
-                ZStack {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(height: 300)
-                    
-                    if isDrawingMode {
-                        DrawingView(lines: $lines, imageSize: image.size) {
-                            Task {
-                                await updateMaskImage()
-                            }
-                        }
-                    }
-                    
-                    if let mask = maskImage {
-                        Image(uiImage: mask)
+        ZStack {
+            VStack {
+                if let image = selectedImage ?? fetchedImage {
+                    ZStack {
+                        Image(uiImage: image)
                             .resizable()
                             .scaledToFit()
-                            .opacity(0.5)
-                            .blendMode(.plusLighter)
+                            .edgesIgnoringSafeArea(isDrawingMode ? .all : [])
+                            .frame(maxHeight: isDrawingMode ? UIScreen.main.bounds.height : 300)
+                            .cornerRadius(isDrawingMode ? 0 : 10)
+                            .padding(isDrawingMode ? 0 : 10)
+
+                        if let mask = maskImage {
+                            Image(uiImage: mask)
+                                .resizable()
+                                .scaledToFit()
+                                .edgesIgnoringSafeArea(isDrawingMode ? .all : [])
+                                .frame(maxHeight: isDrawingMode ? UIScreen.main.bounds.height : 300)
+                                .opacity(0.5)
+                                .blendMode(.multiply)
+                                .cornerRadius(isDrawingMode ? 0 : 10)
+                                .padding(isDrawingMode ? 0 : 10)
+                        }
+
+                        if isDrawingMode {
+                            DrawingView(
+                                lines: $lines,
+                                imageSize: image.size,
+                                onDrawEnd: {
+                                    Task {
+                                        await updateMaskImage()
+                                    }
+                                },
+                                isEraserActive: $isEraserActive
+                            )
+                            .edgesIgnoringSafeArea(.all)
+                        }
+                    }
+                    .frame(maxHeight: isDrawingMode ? UIScreen.main.bounds.height : 300)
+                    .edgesIgnoringSafeArea(isDrawingMode ? .all : [])
+                } else {
+                    if isFetchingImage {
+                        ProgressView("Loading image...")
+                            .padding()
+                    } else {
+                        Button(action: {
+                            showImagePicker = true
+                        }) {
+                            VStack {
+                                Image(systemName: "photo")
+                                    .font(.largeTitle)
+                                    .padding()
+                                Text("Upload Image")
+                                    .font(.headline)
+                            }
+                            .foregroundColor(.purple)
+                            .frame(height: 200)
+                            .frame(maxWidth: .infinity)
+                            .background(Color.purple.opacity(0.1))
+                            .cornerRadius(10)
+                        }
+                        .padding()
                     }
                 }
-                .frame(height: 300)
-                .overlay(
+            }
+
+            // Drawing Mode Controls
+            if isDrawingMode {
+                VStack {
                     HStack {
                         Button(action: {
-                            isDrawingMode.toggle()
+                            isDrawingMode = false
                         }) {
-                            Image(systemName: isDrawingMode ? "paintbrush.fill" : "paintbrush")
-                                .foregroundColor(.purple)
-                                .padding(8)
-                                .background(Color.white.opacity(0.8))
-                                .clipShape(Circle())
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 30))
+                                .foregroundColor(.white)
+                                .padding()
                         }
-                        
+                        Spacer()
+                        Button(action: {
+                            isEraserActive.toggle()
+                        }) {
+                            Image(systemName: isEraserActive ? "pencil" : "eraser")
+                                .font(.system(size: 30))
+                                .foregroundColor(.white)
+                                .padding()
+                        }
+                    }
+                    Spacer()
+                    HStack {
                         Button(action: clearMask) {
                             Image(systemName: "trash")
-                                .foregroundColor(.red)
-                                .padding(8)
-                                .background(Color.white.opacity(0.8))
-                                .clipShape(Circle())
+                                .font(.system(size: 30))
+                                .foregroundColor(.white)
+                                .padding()
                         }
+                        Spacer()
                     }
-                    .padding(8),
-                    alignment: .topTrailing
-                )
-            } else {
-                Button(action: {
-                    showImagePicker = true
-                }) {
-                    VStack {
-                        Image(systemName: "photo")
-                            .font(.largeTitle)
-                        Text("Upload Image")
-                    }
-                    .foregroundColor(.purple)
-                    .frame(height: 200)
-                    .frame(maxWidth: .infinity)
-                    .background(Color.purple.opacity(0.1))
-                    .cornerRadius(10)
                 }
                 .padding()
+            } else {
+                // Button to enter drawing mode
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        Button(action: {
+                            isDrawingMode = true
+                        }) {
+                            Image(systemName: "pencil.circle.fill")
+                                .font(.system(size: 30))
+                                .foregroundColor(.purple)
+                                .padding()
+                        }
+                    }
+                }
             }
         }
     }
 
-    @MainActor
-    func updateMaskImage() async {
-        let renderer = ImageRenderer(content:
-            DrawingView(lines: .constant(lines), imageSize: selectedImage?.size ?? .zero) {}
-        )
-        renderer.scale = UIScreen.main.scale
-        if let uiImage = renderer.uiImage {
-            maskImage = uiImage
-        }
+    func clearImage() {
+        selectedImage = nil
+        fetchedImage = nil
+        imageUrl = ""
+        maskImage = nil
+        lines.removeAll()
     }
+
+
+    func updateMaskImage() async {
+        guard let image = selectedImage ?? fetchedImage else { return }
+
+        let renderer = UIGraphicsImageRenderer(size: image.size)
+        let newImage = renderer.image { context in
+            // Fill background with black color
+            context.cgContext.setFillColor(UIColor.black.cgColor)
+            context.cgContext.fill(CGRect(origin: .zero, size: image.size))
+
+            // Set drawing properties for white color
+            context.cgContext.setStrokeColor(UIColor.white.cgColor)
+            context.cgContext.setLineWidth(20)
+            context.cgContext.setLineCap(.round)
+            context.cgContext.setLineJoin(.round)
+
+            for line in lines {
+                guard !line.points.isEmpty else { continue }
+                context.cgContext.beginPath()
+                context.cgContext.move(to: line.points[0])
+                for point in line.points.dropFirst() {
+                    context.cgContext.addLine(to: point)
+                }
+                context.cgContext.strokePath()
+            }
+        }
+
+        maskImage = newImage
+    }
+
 
     func clearMask() {
         lines.removeAll()
         maskImage = nil
+    }
+
+    var fluxDevInpaintingInputs: some View {
+        Group {
+            HStack {
+                Text("Seed (Optional):")
+                TextField("Random", value: $seed, formatter: NumberFormatter())
+                    .keyboardType(.decimalPad)
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                    .frame(width: 150)
+                    .font(.title2)
+                    .padding(.trailing, 10)
+                    .focused($isPromptFocused)
+            }
+            TextField("Image URL (for Image-to-Image)", text: $imageUrl)
+                .keyboardType(.URL)
+                .textFieldStyle(RoundedBorderTextFieldStyle())
+                .onChange(of: imageUrl) { newUrl in
+                    fetchImageFromUrl(newUrl)
+                }
+            if maskImage == nil {
+                Text("No mask image drawn")
+                    .foregroundColor(.red)
+                    .padding()
+            }
+        }
     }
 
     var fluxProInputs: some View {
@@ -344,29 +472,51 @@ struct ContentView: View {
                 .toggleStyle(SwitchToggleStyle(tint: .purple))
         }.padding()
     }
-
-    var fluxDevInpaintingInputs: some View {
-        Group {
-            HStack {
-                Text("Seed (Optional):")
-                TextField("Random", value: $seed, formatter: NumberFormatter())
-                    .keyboardType(.decimalPad)
-                    .textFieldStyle(RoundedBorderTextFieldStyle())
-                    .frame(width: 150)
-                    .font(.title2)
-                    .padding(.trailing, 10)
-                    .focused($isPromptFocused)
-            }
-            TextField("Image URL (for Image-to-Image)", text: $imageUrl)
-                .keyboardType(.URL)
-                .textFieldStyle(RoundedBorderTextFieldStyle())
-            if maskImage == nil {
-                Text("No mask image drawn")
-                    .foregroundColor(.red)
-                    .padding()
+    
+    func fetchImageFromUrl(_ urlString: String) {
+        // Clear previous image and error
+        fetchedImage = nil
+        errorMessage = ""
+        
+        // Check if the URL is valid and not empty
+        guard let url = URL(string: urlString), !urlString.isEmpty else {
+            errorMessage = "Invalid image URL."
+            return
+        }
+        
+        isFetchingImage = true
+        
+        // Fetch the image asynchronously
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let data = try Data(contentsOf: url)
+                let imageSizeInMB = Double(data.count) / (1024.0 * 1024.0)
+                
+                if imageSizeInMB > 1.0 {
+                    DispatchQueue.main.async {
+                        self.errorMessage = "Image size exceeds 1MB. Please choose a smaller file."
+                        self.isFetchingImage = false
+                    }
+                } else if let image = UIImage(data: data) {
+                    DispatchQueue.main.async {
+                        self.fetchedImage = image
+                        self.isFetchingImage = false
+                    }
+                } else {
+                    DispatchQueue.main.async {
+                        self.errorMessage = "Could not load image."
+                        self.isFetchingImage = false
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.errorMessage = "Error fetching image: \(error.localizedDescription)"
+                    self.isFetchingImage = false
+                }
             }
         }
     }
+
     
     func cancelPrediction() {
         guard let predictionId = NetworkManager.shared.currentPredictionId else { return }
@@ -545,14 +695,23 @@ struct ContentView: View {
     var apiKeyModal: some View {
         VStack {
             Spacer()
-            VStack {
-                Text("Replicate API Key")
+            VStack(spacing: 20) {
+                Text("API Keys")
                     .font(.headline)
-                TextField("API Key", text: $apiKey)
-                    .textFieldStyle(RoundedBorderTextFieldStyle())
-                    .padding()
+                VStack(alignment: .leading) {
+                    Text("Replicate API Key")
+                        .font(.subheadline)
+                    TextField("Enter Replicate API Key", text: $apiKey)
+                        .textFieldStyle(RoundedBorderTextFieldStyle())
+                }
+                VStack(alignment: .leading) {
+                    Text("ImgBB API Key")
+                        .font(.subheadline)
+                    TextField("Enter ImgBB API Key", text: $imgbbApiKey)
+                        .textFieldStyle(RoundedBorderTextFieldStyle())
+                }
                 Button(action: {
-                    saveApiKey()
+                    saveApiKeys()
                     withAnimation {
                         showSavedMessage = true
                     }
@@ -561,10 +720,10 @@ struct ContentView: View {
                     Text("Save")
                         .padding()
                         .foregroundColor(.white)
-                        .background(apiKey.isEmpty ? Color.gray : Color.purple)
+                        .background((apiKey.isEmpty || imgbbApiKey.isEmpty) ? Color.gray : Color.purple)
                         .cornerRadius(10)
                 }
-                .disabled(apiKey.isEmpty)
+                .disabled(apiKey.isEmpty || imgbbApiKey.isEmpty)
             }
             .padding()
             Spacer()
@@ -573,6 +732,7 @@ struct ContentView: View {
         .presentationDetents([.fraction(0.5)])
         .edgesIgnoringSafeArea(.all)
     }
+
 
     var modelSelector: some View {
         HStack {
@@ -635,16 +795,15 @@ struct ContentView: View {
                 .background(Color.clear)
                 .cornerRadius(10)
                 .shadow(color: Color.purple.opacity(0.5), radius: 10, x: 0, y: 10)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .lineLimit(12)
-                .frame(width: UIScreen.main.bounds.width * 0.75)
+                .frame(maxWidth: .infinity)
                 .textFieldStyle(RoundedBorderTextFieldStyle())
                 .focused($isPromptFocused)
                 .multilineTextAlignment(.center)
-                .lineLimit(0...6)
+                .lineLimit(6)
                 .padding()
         }
     }
+
 
     private var brightnessFactor: Double {
         let maxCharacters = 20.0
@@ -696,61 +855,313 @@ struct ContentView: View {
     }
 
     func generateImage() {
-           guard !prompt.isEmpty else { return }
-           guard isApiKeyValid else {
-               errorMessage = "Please enter a valid API key."
-               return
-           }
-           isLoading = true
-           predictionStatus = "Starting prediction..."
-           errorMessage = ""
-           isSymbolAtFinalPosition = false
+        guard !prompt.isEmpty else {
+            errorMessage = "Prompt cannot be empty."
+            return
+        }
 
-           var parameters: [String: Any] = ["prompt": prompt]
+        guard isApiKeyValid else {
+            errorMessage = "Please enter a valid API key."
+            return
+        }
 
-           switch selectedModel {
-           case "Flux Pro":
-               parameters["steps"] = Int(steps)
-               parameters["guidance"] = guidance
-               parameters["interval"] = interval
-               parameters["safety_tolerance"] = Int(safetyTolerance)
-           case "Flux Schnell":
-               if let seed = seed {
-                   parameters["seed"] = seed
-               }
-               parameters["output_format"] = outputFormat
-               if outputFormat != "png" {
-                   parameters["output_quality"] = Int(outputQuality)
-               }
-               parameters["disable_safety_checker"] = disableSafetyChecker
-           case "Flux Dev Inpainting":
-               guard let image = selectedImage, let mask = maskImage else {
-                   errorMessage = "Please upload an image and create a mask"
-                   return
-               }
-               parameters["image"] = encodeImage(image)
-               parameters["mask"] = encodeImage(mask)
-               if let seed = seed {
-                   parameters["seed"] = seed
-               }
-               parameters["output_format"] = outputFormat
-           default:
-               break
-           }
-           NetworkManager.shared.createPrediction(model: selectedModel, parameters: parameters) { result in
-               switch result {
-               case .success(let predictionId):
-                   self.trackPrediction(predictionId: predictionId)
-               case .failure(let error):
-                   DispatchQueue.main.async {
-                       self.isLoading = false
-                       self.errorMessage = error.localizedDescription
-                       self.resetSymbolPosition()
-                   }
-               }
-           }
-       }
+        isLoading = true
+        predictionStatus = "Starting prediction..."
+        errorMessage = ""
+
+        switch selectedModel {
+        case "Flux Pro":
+            var parameters: [String: Any] = ["prompt": prompt]
+            parameters["steps"] = Int(steps)
+            parameters["guidance"] = guidance
+            parameters["interval"] = interval
+            parameters["safety_tolerance"] = Int(safetyTolerance)
+
+            NetworkManager.shared.createPrediction(model: selectedModel, parameters: parameters) { result in
+                switch result {
+                case .success(let predictionId):
+                    self.trackPrediction(predictionId: predictionId)
+                case .failure(let error):
+                    DispatchQueue.main.async {
+                        self.isLoading = false
+                        self.errorMessage = error.localizedDescription
+                    }
+                }
+            }
+
+        case "Flux Schnell":
+            var parameters: [String: Any] = ["prompt": prompt]
+            if let seed = seed {
+                parameters["seed"] = seed
+            }
+            parameters["output_format"] = outputFormat
+            if outputFormat != "png" {
+                parameters["output_quality"] = Int(outputQuality)
+            }
+            parameters["disable_safety_checker"] = disableSafetyChecker
+
+            NetworkManager.shared.createPrediction(model: selectedModel, parameters: parameters) { result in
+                switch result {
+                case .success(let predictionId):
+                    self.trackPrediction(predictionId: predictionId)
+                case .failure(let error):
+                    DispatchQueue.main.async {
+                        self.isLoading = false
+                        self.errorMessage = error.localizedDescription
+                    }
+                }
+            }
+
+        case "Flux Dev Inpainting":
+            let imageToUpload: UIImage?
+
+            if let selected = selectedImage {
+                imageToUpload = selected
+            } else if let fetched = fetchedImage {
+                imageToUpload = fetched
+            } else {
+                errorMessage = "Please upload an image or provide a valid image URL."
+                isLoading = false
+                return
+            }
+
+            // Check image size
+            guard let imageData = imageToUpload?.jpegData(compressionQuality: 0.8) else {
+                errorMessage = "Failed to process the image."
+                isLoading = false
+                return
+            }
+            let imageSizeInMB = Double(imageData.count) / (1024.0 * 1024.0)
+            if imageSizeInMB > 32.0 {
+                errorMessage = "Image size exceeds 32MB. Please choose a smaller file."
+                isLoading = false
+                return
+            }
+
+            // Prepare for uploading images
+            let dispatchGroup = DispatchGroup()
+            var imageURL: String?
+            var maskURL: String?
+            var uploadError: Error?
+
+            // Upload image
+            dispatchGroup.enter()
+            uploadImageToImgBB(imageData: imageData) { result in
+                switch result {
+                case .success(let url):
+                    imageURL = url
+                case .failure(let error):
+                    uploadError = error
+                }
+                dispatchGroup.leave()
+            }
+
+            // Handle mask (if any)
+            if let mask = maskImage {
+                // Ensure mask is same size as image
+                let resizedMask = resizeImage(mask, targetSize: imageToUpload!.size)
+
+                // Convert mask to black and white
+                if let bwMask = convertToBlackAndWhite(mask: resizedMask) {
+                    // Convert mask to data
+                    guard let maskData = bwMask.jpegData(compressionQuality: 0.8) else {
+                        errorMessage = "Failed to process the mask image."
+                        isLoading = false
+                        return
+                    }
+
+                    // Upload mask
+                    dispatchGroup.enter()
+                    uploadImageToImgBB(imageData: maskData) { result in
+                        switch result {
+                        case .success(let url):
+                            maskURL = url
+                        case .failure(let error):
+                            uploadError = error
+                        }
+                        dispatchGroup.leave()
+                    }
+                } else {
+                    errorMessage = "Failed to convert mask to black and white."
+                    isLoading = false
+                    return
+                }
+            }
+
+            dispatchGroup.notify(queue: .main) {
+                if let error = uploadError {
+                    self.errorMessage = "Upload error: \(error.localizedDescription)"
+                    self.isLoading = false
+                    return
+                }
+
+                guard let imageURL = imageURL else {
+                    self.errorMessage = "Failed to upload image."
+                    self.isLoading = false
+                    return
+                }
+
+                var parameters: [String: Any] = [
+                    "prompt": self.prompt,
+                    "image": imageURL,
+                    "strength": 1,
+                    "output_quality": 90
+                ]
+
+                if let maskURL = maskURL {
+                    parameters["mask"] = maskURL
+                }
+
+                parameters["guidance_scale"] = guidance
+                parameters["num_inference_steps"] = Int(steps)
+                parameters["seed"] = seed
+
+                NetworkManager.shared.createPrediction(model: self.selectedModel, parameters: parameters) { result in
+                    switch result {
+                    case .success(let predictionId):
+                        self.trackPrediction(predictionId: predictionId)
+                    case .failure(let error):
+                        DispatchQueue.main.async {
+                            self.isLoading = false
+                            self.errorMessage = error.localizedDescription
+                        }
+                    }
+                }
+            }
+        default:
+            errorMessage = "Unsupported model."
+            isLoading = false
+        }
+    }
     
+    func uploadImageToImgBB(imageData: Data, completion: @escaping (Result<String, Error>) -> Void) {
+        // Retrieve the API key from the Keychain
+        guard let apiKey = KeychainHelper.shared.retrieve(key: "imgbbApiKey") else {
+            completion(.failure(NSError(domain: "API Key Missing", code: 401, userInfo: [NSLocalizedDescriptionKey: "API Key not found in Keychain"])))
+            return
+        }
+        
+        // Prepare the URL
+        guard let url = URL(string: "https://api.imgbb.com/1/upload") else {
+            completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"])))
+            return
+        }
+        
+        // Create URLRequest
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        
+        // Set multipart form boundary
+        let boundary = UUID().uuidString
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        
+        // Create the multipart body
+        let body = createMultipartBody(with: imageData, boundary: boundary, apiKey: apiKey)
+        
+        // Attach the body to the request
+        request.httpBody = body
+        
+        // Create a URLSession task
+        let task = URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error = error {
+                completion(.failure(error))
+                return
+            }
+            
+            guard let data = data else {
+                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data received"])))
+                return
+            }
+            
+            // Parse the response
+            do {
+                let json = try JSONSerialization.jsonObject(with: data, options: [])
+                if let dict = json as? [String: Any], let imageUrl = (dict["data"] as? [String: Any])?["url"] as? String {
+                    print("Image URL: \(imageUrlL)")
+                    completion(.success(imageUrl))
+                } else {
+                    completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Unexpected response format"])))
+                }
+            } catch {
+                completion(.failure(error))
+            }
+        }
+        
+        task.resume()
+    }
+
+    func createMultipartBody(with imageData: Data, boundary: String, apiKey: String) -> Data {
+        var body = Data()
+        
+        // Add the API key field
+        body.appendString("--\(boundary)\r\n")
+        body.appendString("Content-Disposition: form-data; name=\"key\"\r\n\r\n")
+        body.appendString("\(apiKey)\r\n")
+        
+        // Add the image data
+        body.appendString("--\(boundary)\r\n")
+        body.appendString("Content-Disposition: form-data; name=\"image\"; filename=\"image.jpg\"\r\n")
+        body.appendString("Content-Type: image/jpeg\r\n\r\n")
+        body.append(imageData)
+        body.appendString("\r\n")
+        
+        // Close the boundary
+        body.appendString("--\(boundary)--\r\n")
+        
+        return body
+    }
+
+
+    struct ImgBBUploadResponse: Codable {
+        let data: ImgBBUploadData
+    }
+
+    struct ImgBBUploadData: Codable {
+        let url: String
+    }
+
+    func resizeImage(_ image: UIImage, targetSize: CGSize) -> UIImage {
+        let size = image.size
+
+        let widthRatio  = targetSize.width  / size.width
+        let heightRatio = targetSize.height / size.height
+
+        // Determine the scale factor that preserves aspect ratio
+        let scaleFactor = min(widthRatio, heightRatio)
+
+        let scaledImageSize = CGSize(
+            width: size.width * scaleFactor,
+            height: size.height * scaleFactor
+        )
+
+        // Draw and resize the image
+        UIGraphicsBeginImageContextWithOptions(targetSize, false, 0)
+        image.draw(in: CGRect(origin: .zero, size: scaledImageSize))
+        let resizedImage = UIGraphicsGetImageFromCurrentImageContext()
+        UIGraphicsEndImageContext()
+
+        return resizedImage ?? image
+    }
+
+    func convertToBlackAndWhite(mask: UIImage) -> UIImage? {
+        guard let cgImage = mask.cgImage else { return nil }
+        let context = CIContext()
+        let ciImage = CIImage(cgImage: cgImage)
+
+        // Apply a threshold filter
+        let thresholdFilter = CIFilter(name: "CIColorClamp")!
+        thresholdFilter.setValue(ciImage, forKey: kCIInputImageKey)
+        thresholdFilter.setValue(CIVector(x: 0.0, y: 0.0, z: 0.0, w: 1.0), forKey: "inputMinComponents")
+        thresholdFilter.setValue(CIVector(x: 1.0, y: 1.0, z: 1.0, w: 1.0), forKey: "inputMaxComponents")
+
+        if let outputImage = thresholdFilter.outputImage,
+           let cgImageResult = context.createCGImage(outputImage, from: outputImage.extent) {
+            return UIImage(cgImage: cgImageResult)
+        }
+
+        return nil
+    }
+
     func trackPrediction(predictionId: String) {
         DispatchQueue.global().async {
             var status: String = ""
@@ -795,6 +1206,7 @@ struct ContentView: View {
     }
 
     func savePromptHistory() {
+        let maskData = maskImage?.jpegData(compressionQuality: 0.8)
         let newHistory = PromptHistory(
             model: selectedModel,
             prompt: prompt,
@@ -806,11 +1218,15 @@ struct ContentView: View {
             seed: seed,
             outputFormat: outputFormat,
             outputQuality: outputQuality,
-            disableSafetyChecker: disableSafetyChecker
+            disableSafetyChecker: disableSafetyChecker,
+            imageUrl: selectedModel == "Flux Dev Inpainting" ? imageUrl : nil,
+            mask: selectedModel == "Flux Dev Inpainting" ? maskData : nil
         )
         modelContext.insert(newHistory)
         try? modelContext.save()
     }
+
+
 
     func sliderInput(title: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double) -> some View {
         VStack(alignment: .leading) {
@@ -824,24 +1240,27 @@ struct ContentView: View {
         }
     }
 
+
     func loadApiKey() {
         if let storedKey = KeychainHelper.shared.retrieve(key: "apiKey") {
             apiKey = storedKey
         }
-    }
-
-    func saveApiKey() {
-        if validateApiKey(apiKey) {
-            KeychainHelper.shared.save(key: "apiKey", value: apiKey)
-            isApiKeyValid = true
-        } else {
-            isApiKeyValid = false
+        if let storedImgBBKey = KeychainHelper.shared.retrieve(key: "imgbbApiKey") {
+            imgbbApiKey = storedImgBBKey
         }
     }
-
-    func validateApiKey(_ key: String) -> Bool {
-        return !key.isEmpty && key.count >= 10
+    
+    func saveApiKeys() {
+        KeychainHelper.shared.save(apiKey, forKey: "apiKey")
+        KeychainHelper.shared.save(imgbbApiKey, forKey: "imgbbApiKey")
+        isApiKeyValid = validateApiKeys()
     }
+
+
+    func validateApiKeys() -> Bool {
+        return !apiKey.isEmpty && !imgbbApiKey.isEmpty
+    }
+
 
     func resetSymbolPosition() {
         withAnimation(.spring()) {
@@ -879,6 +1298,8 @@ struct ContentView: View {
 
 struct ImagePicker: UIViewControllerRepresentable {
     @Binding var image: UIImage?
+    @Binding var errorMessage: String // Changed to non-optional String
+
     @Environment(\.presentationMode) private var presentationMode
 
     func makeUIViewController(context: UIViewControllerRepresentableContext<ImagePicker>) -> UIImagePickerController {
@@ -902,12 +1323,28 @@ struct ImagePicker: UIViewControllerRepresentable {
 
         func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
             if let image = info[.originalImage] as? UIImage {
-                parent.image = image
+                if let imageData = image.jpegData(compressionQuality: 0.8) {
+                    let imageSizeInMB = Double(imageData.count) / (1024.0 * 1024.0)
+                    if imageSizeInMB <= 1.0 {
+                        parent.image = image
+                        parent.errorMessage = "" // Clear error if image is valid
+                    } else {
+                        parent.errorMessage = "Selected image exceeds 1MB."
+                    }
+                } else {
+                    parent.errorMessage = "Failed to process the selected image."
+                }
             }
+            parent.presentationMode.wrappedValue.dismiss()
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
             parent.presentationMode.wrappedValue.dismiss()
         }
     }
 }
+
+
 
 
 struct ContentView_Previews: PreviewProvider {
@@ -1543,84 +1980,88 @@ class PromptHistory {
 class NetworkManager {
     static let shared = NetworkManager()
     private init() {}
-
+    
     private let baseUrl = "https://api.replicate.com/v1/predictions"
-
-    private let modelEndpoints = [
-        "Flux Pro": "black-forest-labs/flux-pro:7a0ae8c0ea9e5a8118e28e2bb70af055a9df57b62bf9e8b0e4e31362201cf3bc",
-        "Flux Schnell": "black-forest-labs/flux-schnell:7e8e3a1f7a3a7d9f6c6e4f3a3d3a3d3a3d3a3d3a3d3a3d3a3d3a3d3a3d3a",
-        "Flux Dev Inpainting": "stability-ai/stable-diffusion-inpainting:c28b92a7ecd66eee4aefcd8a94eb9e7f6c3805d5f06038165407fb5cb355ba67"
+    
+    private let modelConfigurations: [String: NetworkModelConfig] = [
+        "Flux Pro": .standard(endpoint: "black-forest-labs/flux-pro"),
+        "Flux Schnell": .standard(endpoint: "black-forest-labs/flux-schnell"),
+        "Flux Dev Inpainting": .standard(endpoint: "zsxkib/flux-dev-inpainting")
     ]
-
+    
     var currentPredictionId: String?
-
-    // Method to create a prediction
+    
     func createPrediction(model: String, parameters: [String: Any], completion: @escaping (Result<String, Error>) -> Void) {
         guard let apiKey = KeychainHelper.shared.retrieve(key: "apiKey") else {
             completion(.failure(NSError(domain: "API Key Missing", code: 401, userInfo: nil)))
             return
         }
-
-        guard let modelVersion = modelEndpoints[model] else {
+        
+        guard let config = modelConfigurations[model] else {
             completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid model"])))
             return
         }
-
-        let url = URL(string: baseUrl)!
+        
+        let url = config.endpointURL
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        let finalParameters: [String: Any] = [
-            "version": modelVersion,
-            "input": parameters
-        ]
-
+        
+        // Prepare the JSON body
+        var finalParameters: [String: Any] = [:]
+        switch config {
+        case .standard:
+            finalParameters = ["input": parameters]
+        case .versioned(let version):
+            finalParameters = [
+                "version": version,
+                "input": parameters
+            ]
+        }
+        
         guard let httpBody = try? JSONSerialization.data(withJSONObject: finalParameters, options: []) else {
             completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to serialize parameters"])))
             return
         }
         request.httpBody = httpBody
-
+        
         let task = URLSession.shared.dataTask(with: request) { data, response, error in
             if let error = error {
                 print("Create Prediction Error: \(error.localizedDescription)")
                 completion(.failure(error))
                 return
             }
-
+            
             guard let data = data, let httpResponse = response as? HTTPURLResponse else {
                 print("Create Prediction: No data or invalid response")
                 completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data received"])))
                 return
             }
-
+            
             print("Create Prediction HTTP Status: \(httpResponse.statusCode)")
-
+            
             do {
-                if let jsonResponse = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] {
-                    print("Create Prediction Response JSON: \(jsonResponse)")
-
-                    if let predictionId = jsonResponse["id"] as? String {
-                        self.currentPredictionId = predictionId
-                        completion(.success(predictionId))
-                    } else if let errorMessage = jsonResponse["detail"] as? String {
-                        completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMessage])))
-                    } else {
-                        completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response format"])))
-                    }
+                let decoder = JSONDecoder()
+                let predictionResponse = try decoder.decode(PredictionResponse.self, from: data)
+                
+                if let predictionId = predictionResponse.id {
+                    self.currentPredictionId = predictionId
+                    completion(.success(predictionId))
+                } else if let errorMessage = predictionResponse.detail {
+                    completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMessage])))
                 } else {
-                    completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Unable to parse JSON"])))
+                    completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response format"])))
                 }
             } catch {
+                print("JSON parsing error: \(error.localizedDescription)")
                 completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "JSON parsing error: \(error.localizedDescription)"])))
             }
         }
-
+        
         task.resume()
     }
-
+    
     // Method to track the prediction status
     func getPredictionStatus(predictionId: String, completion: @escaping (Result<String, Error>) -> Void) {
         let url = URL(string: "https://api.replicate.com/v1/predictions/\(predictionId)")!
@@ -1628,60 +2069,56 @@ class NetworkManager {
             completion(.failure(NSError(domain: "API Key Missing", code: 401, userInfo: nil)))
             return
         }
-
+        
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-
+        
         let task = URLSession.shared.dataTask(with: request) { data, response, error in
             if let error = error {
                 print("Get Prediction Status Error: \(error.localizedDescription)")
                 completion(.failure(error))
                 return
             }
-
+            
             guard let data = data, let httpResponse = response as? HTTPURLResponse else {
                 print("Get Prediction Status: No data or invalid response")
                 completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data received"])))
                 return
             }
-
+            
             print("Get Prediction Status HTTP Status: \(httpResponse.statusCode)")
-
+            
             do {
-                if let jsonResponse = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] {
-                    print("Get Prediction Status Response JSON: \(jsonResponse)")
-
-                    if let status = jsonResponse["status"] as? String {
-                        completion(.success(status))
-                    } else if let errorMessage = jsonResponse["detail"] as? String {
-                        completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMessage])))
-                    } else {
-                        completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid status response format"])))
-                    }
+                let decoder = JSONDecoder()
+                let statusResponse = try decoder.decode(PredictionResponse.self, from: data)
+                
+                if let status = statusResponse.status {
+                    completion(.success(status))
+                } else if let errorMessage = statusResponse.detail {
+                    completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMessage])))
                 } else {
-                    completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Unable to parse status JSON"])))
+                    completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid status response format"])))
                 }
             } catch {
                 completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Status JSON parsing error: \(error.localizedDescription)"])))
             }
         }
-
+        
         task.resume()
     }
-
-    // Method to get the prediction output (image)
+    
     func getPredictionOutput(predictionId: String, model: String, context: ModelContext, completion: @escaping (Result<UIImage, Error>) -> Void) {
         let url = URL(string: "https://api.replicate.com/v1/predictions/\(predictionId)")!
         guard let apiKey = KeychainHelper.shared.retrieve(key: "apiKey") else {
             completion(.failure(NSError(domain: "API Key Missing", code: 401, userInfo: nil)))
             return
         }
-
+        
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-
+        
         let task = URLSession.shared.dataTask(with: request) { data, response, error in
             if let error = error {
                 print("Get Prediction Output Error: \(error.localizedDescription)")
@@ -1690,7 +2127,7 @@ class NetworkManager {
                 }
                 return
             }
-
+            
             guard let data = data, let httpResponse = response as? HTTPURLResponse else {
                 print("Get Prediction Output: No data or invalid response")
                 DispatchQueue.main.async {
@@ -1698,47 +2135,50 @@ class NetworkManager {
                 }
                 return
             }
-
+            
             print("Get Prediction Output HTTP Status: \(httpResponse.statusCode)")
-
+            
             do {
-                if let jsonResponse = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] {
-                    print("Get Prediction Output Response JSON: \(jsonResponse)")
-
-                    let outputUrlString: String?
-                    if model == "Flux Schnell" || model == "Flux Dev Inpainting" {
-                        outputUrlString = (jsonResponse["output"] as? [String])?.first
-                    } else {
-                        outputUrlString = jsonResponse["output"] as? String
-                    }
-
-                    if let outputUrlString = outputUrlString,
-                       let imageUrl = URL(string: outputUrlString) {
-                        
-                        DispatchQueue.global(qos: .userInitiated).async {
-                            if let imageData = try? Data(contentsOf: imageUrl),
-                               let image = UIImage(data: imageData) {
-                                
-                                DispatchQueue.main.async {
-                                    let newImage = GeneratedImage(originalImageData: imageData)
-                                    context.insert(newImage)
-                                    try? context.save()
+                let decoder = JSONDecoder()
+                let outputResponse = try decoder.decode(PredictionResponse.self, from: data)
+                
+                // Extract the first output URL based on the Output enum
+                let outputUrlString: String?
+                switch outputResponse.output {
+                case .single(let urlString):
+                    outputUrlString = urlString
+                case .multiple(let urlArray):
+                    outputUrlString = urlArray.first
+                case .none:
+                    outputUrlString = nil
+                }
+                
+                if let outputUrlString = outputUrlString,
+                   let imageUrl = URL(string: outputUrlString) {
+                    
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        if let imageData = try? Data(contentsOf: imageUrl),
+                           let image = UIImage(data: imageData) {
+                            
+                            DispatchQueue.main.async {
+                                let newImage = GeneratedImage(originalImageData: imageData)
+                                context.insert(newImage)
+                                do {
+                                    try context.save()
                                     completion(.success(image))
-                                }
-                            } else {
-                                DispatchQueue.main.async {
-                                    self.handleOutputError(jsonResponse, completion: completion)
+                                } catch {
+                                    completion(.failure(error))
                                 }
                             }
-                        }
-                    } else {
-                        DispatchQueue.main.async {
-                            self.handleOutputError(jsonResponse, completion: completion)
+                        } else {
+                            DispatchQueue.main.async {
+                                self.handleOutputError(outputResponse, completion: completion)
+                            }
                         }
                     }
                 } else {
                     DispatchQueue.main.async {
-                        completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Unable to parse output JSON"])))
+                        self.handleOutputError(outputResponse, completion: completion)
                     }
                 }
             } catch {
@@ -1747,19 +2187,19 @@ class NetworkManager {
                 }
             }
         }
-
+        
         task.resume()
     }
-
+    
     // Helper method to handle errors
-    func handleOutputError(_ jsonResponse: [String: Any], completion: @escaping (Result<UIImage, Error>) -> Void) {
-        if let errorMessage = jsonResponse["detail"] as? String {
+    func handleOutputError(_ jsonResponse: PredictionResponse, completion: @escaping (Result<UIImage, Error>) -> Void) {
+        if let errorMessage = jsonResponse.detail {
             completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMessage])))
         } else {
             completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid output response format"])))
         }
     }
-
+    
     // Method to cancel a prediction
     func cancelPrediction(predictionId: String, completion: @escaping (Result<Void, Error>) -> Void) {
         let url = URL(string: "https://api.replicate.com/v1/predictions/\(predictionId)/cancel")!
@@ -1767,33 +2207,88 @@ class NetworkManager {
             completion(.failure(NSError(domain: "API Key Missing", code: 401, userInfo: nil)))
             return
         }
-
+        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-
+        
         let task = URLSession.shared.dataTask(with: request) { data, response, error in
             if let error = error {
                 print("Cancel Prediction Error: \(error.localizedDescription)")
                 completion(.failure(error))
                 return
             }
-
+            
             guard let httpResponse = response as? HTTPURLResponse else {
                 print("Cancel Prediction: Invalid response")
                 completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response received"])))
                 return
             }
-
+            
             print("Cancel Prediction HTTP Status: \(httpResponse.statusCode)")
-
-            completion(.success(()))
+            
+            if (200...299).contains(httpResponse.statusCode) {
+                completion(.success(()))
+            } else {
+                completion(.failure(NSError(domain: "", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: "Failed to cancel prediction"])))
+            }
         }
-
+        
+        task.resume()
+    }
+    
+    
+    func uploadToImgBB(apiKey: String, imageData: Data, name: String? = nil, completion: @escaping (Result<String, Error>) -> Void) {
+        guard let url = URL(string: "https://api.imgbb.com/1/upload") else {
+            completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"])))
+            return
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        
+        var bodyComponents = URLComponents()
+        bodyComponents.queryItems = [
+            URLQueryItem(name: "key", value: apiKey),
+            URLQueryItem(name: "image", value: imageData.base64EncodedString())
+        ]
+        if let name = name {
+            bodyComponents.queryItems?.append(URLQueryItem(name: "name", value: name))
+        }
+        
+        request.httpBody = bodyComponents.query?.data(using: .utf8)
+        
+        let task = URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error = error {
+                completion(.failure(error))
+                return
+            }
+            
+            guard let data = data else {
+                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data received"])))
+                return
+            }
+            
+            do {
+                let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any]
+                if let dataDict = json?["data"] as? [String: Any], let url = dataDict["url"] as? String {
+                    completion(.success(url))
+                } else {
+                    completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response format"])))
+                }
+            } catch {
+                completion(.failure(error))
+            }
+        }
         task.resume()
     }
 }
 
+
+
+
+// MARK: - Extension for NavigationController
 
 extension UINavigationController: UIGestureRecognizerDelegate {
     override open func viewDidLoad() {
@@ -1803,5 +2298,91 @@ extension UINavigationController: UIGestureRecognizerDelegate {
 
     public func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         return viewControllers.count > 1
+    }
+}
+// MARK: - ModelConfiguration Enum
+
+enum NetworkModelConfig {
+    case standard(endpoint: String)
+    case versioned(version: String)
+    
+    var endpointURL: URL {
+        switch self {
+        case .standard(let endpoint):
+            return URL(string: "https://api.replicate.com/v1/models/\(endpoint)/predictions")!
+        case .versioned:
+            return URL(string: "https://api.replicate.com/v1/predictions")!
+        }
+    }
+    
+    var requiresVersion: Bool {
+        switch self {
+        case .versioned:
+            return true
+        case .standard:
+            return false
+        }
+    }
+}
+
+// MARK: - PredictionResponse Struct
+
+struct PredictionResponse: Codable {
+    let id: String?
+    let status: String?
+    let output: Output?
+    let detail: String?
+    
+}
+
+enum Output: Codable {
+    case single(String)
+    case multiple([String])
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let single = try? container.decode(String.self) {
+            self = .single(single)
+            return
+        }
+        if let multiple = try? container.decode([String].self) {
+            self = .multiple(multiple)
+            return
+        }
+        throw DecodingError.typeMismatch(Output.self, DecodingError.Context(codingPath: decoder.codingPath, debugDescription: "Expected String or [String] for output"))
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .single(let str):
+            try container.encode(str)
+        case .multiple(let arr):
+            try container.encode(arr)
+        }
+    }
+}
+
+extension Data {
+    mutating func appendString(_ string: String) {
+        if let data = string.data(using: .utf8) {
+            append(data)
+        }
+    }
+}
+
+extension Data {
+    mutating func append(_ string: String) {
+        if let data = string.data(using: .utf8) {
+            append(data)
+        }
+    }
+}
+
+extension View {
+    func hideKeyboardOnTap() -> some View {
+        self.onTapGesture {
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        }
     }
 }

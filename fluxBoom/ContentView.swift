@@ -10,6 +10,13 @@ import SwiftData
 import Combine
 import UIKit
 
+struct Line: Identifiable {
+    var id = UUID()
+    var points: [CGPoint]
+    var color: Color
+    var lineWidth: CGFloat
+}
+
 struct DrawingMaskView: View {
     @Binding var uploadedImage: UIImage?
     @Binding var maskImage: UIImage?
@@ -20,126 +27,195 @@ struct DrawingMaskView: View {
     var onDrawEnd: () -> Void
     var clearMask: () -> Void
 
+    @State private var scaleFactor: CGFloat = 1.0
+    @State private var imageAspectRatio: CGFloat = 1.0  // Set initial value
+
     var body: some View {
         GeometryReader { geometry in
-            VStack(spacing: 0) {
-                ZStack(alignment: .topTrailing) {
-                    // Image and Drawing Area
+            ZStack(alignment: .topTrailing) {
+                VStack(spacing: 0) {
+                    Spacer()
+
+                    // Image and Canvas
                     ZStack {
-                        // Display uploaded image
                         if let image = uploadedImage {
+                            // Calculate aspect ratio
+                            let aspectRatio = image.size.width / image.size.height
+                            
+                            // Calculate the display size based on available geometry
+                            let availableWidth = geometry.size.width
+                            let availableHeight = geometry.size.height * 0.8
+                            let fittedHeight = availableWidth / aspectRatio
+                            let fittedWidth = availableHeight * aspectRatio
+
+                            let displayWidth = fittedHeight <= availableHeight ? availableWidth : fittedWidth
+                            let displayHeight = fittedHeight <= availableHeight ? fittedHeight : fittedWidth / aspectRatio
+
                             Image(uiImage: image)
                                 .resizable()
-                                .aspectRatio(contentMode: .fit) // Ensure this matches the drawing area
-                                .frame(width: geometry.size.width, height: geometry.size.height * 0.8)
+                                .aspectRatio(contentMode: .fit)
+                                .frame(width: displayWidth, height: displayHeight)
                                 .clipped()
+                                .onAppear {
+                                    // Move the imageAspectRatio assignment here
+                                    imageAspectRatio = aspectRatio
+                                    calculateScaleFactor(image: image, displayWidth: displayWidth, displayHeight: displayHeight)
+                                    logImageDetails(image: image, size: imageSize)
+                                }
+
+                            // Canvas for drawing with adjusted size to match the image
+                            Canvas { context, size in
+                                let xScale = size.width / imageSize.width
+                                let yScale = size.height / imageSize.height
+
+                                for line in lines {
+                                    var path = Path()
+                                    if let firstPoint = line.points.first {
+                                        let mappedPoint = CGPoint(x: firstPoint.x * xScale, y: firstPoint.y * yScale)
+                                        path.move(to: mappedPoint)
+                                        for point in line.points.dropFirst() {
+                                            let mappedPoint = CGPoint(x: point.x * xScale, y: point.y * yScale)
+                                            path.addLine(to: mappedPoint)
+                                        }
+                                        context.stroke(path, with: .color(line.color.opacity(0.9)), lineWidth: line.lineWidth * xScale)
+                                    }
+                                }
+                            }
+                            .frame(width: displayWidth, height: displayHeight)
+                            .gesture(drawingGesture(displayWidth: displayWidth, displayHeight: displayHeight))
+                            .background(Color.clear)
                         } else {
                             Color.gray
                                 .frame(width: geometry.size.width, height: geometry.size.height * 0.8)
                         }
-
-                        // Canvas for drawing
-                        Canvas { context, size in
-                            // Ensure the canvas coordinates are the same as the image frame
-                            for line in lines {
-                                var path = Path()
-                                if let firstPoint = line.points.first {
-                                    path.move(to: firstPoint)
-                                    for point in line.points.dropFirst() {
-                                        path.addLine(to: point)
-                                    }
-                                    context.stroke(path, with: .color(Color.white.opacity(0.9)), lineWidth: 20)
-                                }
-                            }
-                        }
-                        .frame(width: geometry.size.width, height: geometry.size.height * 0.8) // Ensure the frame is the same as the image
-                        .gesture(
-                            DragGesture(minimumDistance: 0.1, coordinateSpace: .local)
-                                .onChanged { value in
-                                    let newPoint = value.location
-                                    
-                                    // Check if there's an active line and append points to the current one
-                                    if lines.isEmpty {
-                                        lines.append(Line(points: [newPoint], color: .white, lineWidth: 20))
-                                        print("Started new line with initial point: \(newPoint)") // Debugging
-                                    } else {
-                                        lines[lines.count - 1].points.append(newPoint)
-                                        print("Added point to current line: \(newPoint)") // Debugging
-                                    }
-                                }
-                                .onEnded { _ in
-                                    onDrawEnd() // Trigger mask generation after drawing ends
-                                    print("Drawing ended") // Debugging
-                                }
-                        )
-                        .background(Color.clear) // Ensure no background color interferes
-                    }
-                    .frame(width: geometry.size.width, height: geometry.size.height * 0.8)
-                    .background(Color.black.opacity(0.1)) // Temporary background for debugging
-
-                    // Close Button in Top-Right Corner
-                    Button(action: {
-                        isDrawingMode = false
-                        print("Exiting drawing mode") // Debugging
-                    }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.title)
-                            .foregroundColor(.white)
-                            .padding(10)
-                    }
-                    .padding([.top, .trailing], 20)
-                }
-                .frame(width: geometry.size.width, height: geometry.size.height * 0.8)
-
-                // Controls Below the Image
-                HStack {
-                    // Eraser Toggle Button
-                    Button(action: {
-                        isEraserActive.toggle()
-                        print("Eraser toggled to: \(isEraserActive)") // Debugging
-                    }) {
-                        Image(systemName: isEraserActive ? "eraser.fill" : "pencil.tip")
-                            .font(.title)
-                            .foregroundColor(isEraserActive ? .red : .blue)
-                            .padding()
-                            .background(Color.black.opacity(0.5))
-                            .clipShape(Circle())
                     }
 
                     Spacer()
 
-                    // Clear Mask Button
-                    Button(action: {
-                        clearMask()
-                        print("Mask cleared") // Debugging
-                    }) {
-                        Image(systemName: "trash.fill")
-                            .font(.title)
-                            .foregroundColor(.white)
-                            .padding()
-                            .background(Color.black.opacity(0.5))
-                            .clipShape(Circle())
+                    // Control Panel at Bottom (unchanged)
+                    HStack {
+                        // Eraser Toggle Button
+                        Button(action: {
+                            isEraserActive.toggle()
+                            print("Eraser toggled to: \(isEraserActive)") // Debugging
+                        }) {
+                            Image(systemName: isEraserActive ? "eraser.fill" : "pencil.tip")
+                                .font(.title)
+                                .foregroundColor(isEraserActive ? .red : .blue)
+                                .padding()
+                                .background(Color.black.opacity(0.5))
+                                .clipShape(Circle())
+                        }
+
+                        Spacer()
+
+                        // Clear Mask Button
+                        Button(action: {
+                            clearMask()
+                            print("Mask cleared") // Debugging
+                        }) {
+                            Image(systemName: "trash.fill")
+                                .font(.title)
+                                .foregroundColor(.white)
+                                .padding()
+                                .background(Color.black.opacity(0.5))
+                                .clipShape(Circle())
+                        }
+                    }
+                    .padding()
+                    .frame(height: 60)
+                    .background(Color.black.opacity(0.05)) // Optional: Semi-transparent background for controls
+                }
+
+                // Close Button at Top-Right Corner of the Screen
+                Button(action: {
+                    isDrawingMode = false
+                    print("Exiting drawing mode") // Debugging
+                }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title)
+                        .foregroundColor(.white)
+                        .padding(10)
+                        .background(Color.black.opacity(0.6))
+                        .clipShape(Circle())
+                }
+                .padding([.top, .trailing], 20)
+            }
+            .edgesIgnoringSafeArea(.all)
+        }
+    }
+
+    // Calculate scale factor based on image and display size
+    private func calculateScaleFactor(image: UIImage, displayWidth: CGFloat, displayHeight: CGFloat) {
+        let imagePixelWidth = image.size.width * image.scale
+        let displayPixelWidth = displayWidth * UIScreen.main.scale
+
+        scaleFactor = imagePixelWidth / displayPixelWidth
+        print("Scale Factor Calculated: \(scaleFactor)")
+    }
+
+
+    // Logging function to print image details
+    private func logImageDetails(image: UIImage, size: CGSize) {
+        let aspectRatio = size.width / size.height
+        print("Uploaded Image Size: \(size.width) x \(size.height)")
+        print("Uploaded Image Aspect Ratio: \(aspectRatio)")
+    }
+
+    // Convert image points to canvas points
+    private func convertPoint(_ point: CGPoint) -> CGPoint {
+        return CGPoint(x: point.x / scaleFactor, y: point.y / scaleFactor)
+    }
+
+    private func drawingGesture(displayWidth: CGFloat, displayHeight: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 0.1, coordinateSpace: .local)
+            .onChanged { value in
+                let location = value.location
+
+                // Map the touch point to the image coordinate system
+                let xScale = imageSize.width / displayWidth
+                let yScale = imageSize.height / displayHeight
+                let newPoint = CGPoint(x: location.x * xScale, y: location.y * yScale)
+
+                // Clamp the point within the image bounds
+                let clampedPoint = clampPoint(newPoint, within: imageSize)
+
+                if isEraserActive {
+                    erase(at: clampedPoint)
+                } else {
+                    if lines.isEmpty || lines.last?.points.isEmpty ?? true {
+                        // Start a new line
+                        lines.append(Line(points: [clampedPoint], color: .white, lineWidth: 40))
+                        print("Started new line with initial point: \(clampedPoint)")
+                    } else {
+                        // Continue adding to the last line
+                        if var lastLine = lines.popLast() {
+                            lastLine.points.append(clampedPoint)
+                            lines.append(lastLine)
+                            print("Added point to current line: \(clampedPoint)")
+                        }
                     }
                 }
-                .padding()
-                .frame(height: geometry.size.height * 0.2)
-                .background(Color.black.opacity(0.05)) // Optional: Semi-transparent background for controls
             }
-            .frame(width: geometry.size.width, height: geometry.size.height)
-            .background(Color.black.opacity(0.2)) // Temporary background for debugging
-        }
-        .edgesIgnoringSafeArea(.all)
+            .onEnded { _ in
+                if !isEraserActive {
+                    onDrawEnd()
+                    print("Drawing ended")
+                }
+            }
     }
+
 
     // Erase Functionality
     private func erase(at point: CGPoint) {
-        let eraseThreshold: CGFloat = 30.0
-        lines = lines.filter { line in
-            !line.points.contains { p in
+        let eraseThreshold: CGFloat = 60.0 * scaleFactor
+        for i in 0..<lines.count {
+            lines[i].points.removeAll { p in
                 distance(from: p, to: point) < eraseThreshold
             }
         }
-        print("Erasing at: \(point), remaining lines: \(lines.count)") // Debugging
+        lines.removeAll { $0.points.isEmpty }
+        print("Erased at: \(point), remaining lines: \(lines.count)")
     }
 
     // Helper Function to Calculate Distance
@@ -148,17 +224,14 @@ struct DrawingMaskView: View {
         let dy = from.y - to.y
         return sqrt(dx * dx + dy * dy)
     }
+
+    // Clamping Function
+    private func clampPoint(_ point: CGPoint, within size: CGSize) -> CGPoint {
+        let clampedX = min(max(point.x, 0), size.width)
+        let clampedY = min(max(point.y, 0), size.height)
+        return CGPoint(x: clampedX, y: clampedY)
+    }
 }
-
-
-// Line Model
-struct Line: Identifiable {
-    var id = UUID()
-    var points: [CGPoint]
-    var color: Color
-    var lineWidth: CGFloat
-}
-
 
 
 struct ContentView: View {
@@ -180,6 +253,10 @@ struct ContentView: View {
     @State private var outputFormat: String = "webp"
     @State private var outputQuality: Double = 80
     @State private var disableSafetyChecker: Bool = false
+
+    @State private var strength: Int = 1
+    @State private var numOutputs: Int = 1
+
     
     // Flux Dev Inpainting specific inputs
     @State private var selectedImage: UIImage?
@@ -313,26 +390,35 @@ struct ContentView: View {
             .fullScreenCover(isPresented: $isDrawingMode) {
                 if let image = selectedImage ?? fetchedImage {
                     DrawingMaskView(
-                        uploadedImage: $selectedImage, maskImage: $maskImage,
+                        uploadedImage: $selectedImage,
+                        maskImage: $maskImage,
                         isDrawingMode: $isDrawingMode,
                         lines: $lines,
                         isEraserActive: $isEraserActive,
-                        imageSize: image.size,
+                        imageSize: image.size, // Pass the original image size
                         onDrawEnd: {
                             Task {
                                 await updateMaskImage()
                             }
-                        }, clearMask: {
+                        },
+                        clearMask: {
                             clearMask()
                         }
                     )
                 } else {
                     // Handle case where no image is selected
-                    Text("No image available for drawing.")
-                        .font(.headline)
+                    VStack {
+                        Text("No image available for drawing.")
+                            .font(.headline)
+                            .padding()
+                        Button("Dismiss") {
+                            isDrawingMode = false
+                        }
                         .padding()
+                    }
                 }
             }
+
         }
         .sheet(isPresented: $showImagePicker) {
             ImagePicker(image: $selectedImage, errorMessage: $errorMessage)
@@ -372,28 +458,40 @@ struct ContentView: View {
         ZStack {
             VStack {
                 if let image = selectedImage ?? fetchedImage {
-                    ZStack {
+                    ZStack(alignment: .topTrailing) { // Align clear button to top-right
                         // Display the uploaded image
                         Image(uiImage: image)
                             .resizable()
-                            .scaledToFit() // Make sure the image is scaled correctly
-                            .frame(maxHeight: 300)
+                            .scaledToFit()
+                            .frame(maxHeight: 500) // Increased maxHeight for better visibility
                             .cornerRadius(10)
                             .padding(10)
-                            .alignmentGuide(.leading) { d in d[.leading] }
-                        
+
                         // Display the mask image if it exists
                         if let mask = maskImage {
                             Image(uiImage: mask)
                                 .resizable()
-                                .scaledToFit() // Ensure mask has the same scaling
-                                .frame(maxHeight: 300)
+                                .scaledToFit()
+                                .frame(maxHeight: 500)
                                 .opacity(0.5)
                                 .blendMode(.multiply)
                                 .cornerRadius(10)
                                 .padding(10)
-                                .alignmentGuide(.leading) { d in d[.leading] }
                         }
+
+                        // Clear Button in Top-Right Corner
+                        Button(action: {
+                            clearImage()
+                            print("Image and mask cleared") // Debugging
+                        }) {
+                            Image(systemName: "trash.fill")
+                                .font(.title)
+                                .foregroundColor(.white)
+                                .padding(10)
+                        }
+                        .background(Color.black.opacity(0.6))
+                        .clipShape(Circle())
+                        .padding(10)
                     }
                 } else {
                     // Show upload image button if no image is selected
@@ -432,7 +530,7 @@ struct ContentView: View {
                             isDrawingMode = true
                         }) {
                             Image(systemName: "pencil.circle.fill")
-                                .font(.system(size: 30))
+                                .font(.system(size: 40)) // Increased size for better visibility
                                 .foregroundColor(.purple)
                                 .padding()
                         }
@@ -459,15 +557,19 @@ struct ContentView: View {
     }
     
     func generateMaskImage(from uploadedImage: UIImage, with lines: [Line]) -> UIImage? {
-        let renderer = UIGraphicsImageRenderer(size: uploadedImage.size)
-        return renderer.image { context in
+        let rendererFormat = UIGraphicsImageRendererFormat()
+        rendererFormat.scale = uploadedImage.scale
+        rendererFormat.opaque = false
+
+        let renderer = UIGraphicsImageRenderer(size: uploadedImage.size, format: rendererFormat)
+        let mask = renderer.image { context in
             // Fill background with black
             context.cgContext.setFillColor(UIColor.black.cgColor)
             context.cgContext.fill(CGRect(origin: .zero, size: uploadedImage.size))
 
             // Draw the white lines (the mask) on top
             context.cgContext.setStrokeColor(UIColor.white.cgColor)
-            context.cgContext.setLineWidth(20)
+            context.cgContext.setLineWidth(40 / uploadedImage.scale) // Adjust line width
             context.cgContext.setLineCap(.round)
             context.cgContext.setLineJoin(.round)
 
@@ -481,7 +583,20 @@ struct ContentView: View {
                 context.cgContext.strokePath()
             }
         }
+
+        // Log the mask image size and aspect ratio
+        let maskSize = mask.size
+        let maskScale = mask.scale
+        let maskPixelSize = CGSize(width: maskSize.width * maskScale, height: maskSize.height * maskScale)
+        let maskAspectRatio = maskSize.width / maskSize.height
+        print("Generated Mask Size: \(maskSize.width) x \(maskSize.height) points")
+        print("Generated Mask Scale: \(maskScale)")
+        print("Generated Mask Pixel Size: \(maskPixelSize.width) x \(maskPixelSize.height) pixels")
+        print("Generated Mask Aspect Ratio: \(maskAspectRatio)")
+
+        return mask
     }
+
 
     func clearMask() {
         lines.removeAll()
@@ -490,22 +605,33 @@ struct ContentView: View {
 
     var fluxDevInpaintingInputs: some View {
         Group {
-            HStack {
-                Text("Seed (Optional):")
-                TextField("Random", value: $seed, formatter: NumberFormatter())
-                    .keyboardType(.decimalPad)
-                    .textFieldStyle(RoundedBorderTextFieldStyle())
-                    .frame(width: 150)
-                    .font(.title2)
-                    .padding(.trailing, 10)
-                    .focused($isPromptFocused)
+            // Output format picker
+            Picker("Output Format", selection: $outputFormat) {
+                ForEach(outputFormats, id: \.self) {
+                    Text($0)
+                }
             }
+            .pickerStyle(SegmentedPickerStyle())
+            
+            // Output quality slider (new)
+            if outputFormat != "png" {
+                sliderInput(title: "Output Quality:", value: $outputQuality, range: 0...100, step: 1)
+            }
+            
+            // Guidance scale (new)
+            sliderInput(title: "Guidance:", value: $guidance, range: 0...20, step: 0.1)
+            
+            // Number of inference steps (new)
+            sliderInput(title: "Steps:", value: $steps, range: 1...50, step: 1)
+            
+            // Image URL input for image-to-image generation
             TextField("Image URL (for Image-to-Image)", text: $imageUrl)
                 .keyboardType(.URL)
                 .textFieldStyle(RoundedBorderTextFieldStyle())
                 .onChange(of: imageUrl) { newUrl in
                     fetchImageFromUrl(newUrl)
                 }
+            
             if maskImage == nil {
                 Text("No mask image drawn")
                     .foregroundColor(.red)
@@ -513,6 +639,7 @@ struct ContentView: View {
             }
         }
     }
+
 
 
     var fluxProInputs: some View {
@@ -1005,12 +1132,9 @@ struct ContentView: View {
             // Ensure both image and mask have the same orientation and size
             if let imageToUpload = imageToUpload,
                let mask = maskImage {
-                
-                // Resize the mask to match the size of the image
-                let resizedMask = resizeImage(mask, targetSize: imageToUpload.size)
 
                 // Convert the resized mask to black and white
-                if let blackAndWhiteMask = convertToBlackAndWhite(mask: resizedMask) {
+                if let blackAndWhiteMask = convertToBlackAndWhite(mask: mask) {
                     
                     // Convert mask to PNG format
                     if let maskPNGData = blackAndWhiteMask.pngData() {
@@ -1069,13 +1193,22 @@ struct ContentView: View {
                                 "prompt": self.prompt,
                                 "image": imageURL,
                                 "mask": maskURL,
-                                "strength": 0.85,
+                                "strength": self.strength,
                                 "width": Int(imageToUpload.size.width),
                                 "height": Int(imageToUpload.size.height),
-                                "output_format": "png",
-                                "guidance_scale": 7,
-                                "num_inference_steps": 30
+                                "output_format": self.outputFormat,
+                                "guidance_scale": self.guidance,
+                                "num_inference_steps": Int(self.steps),
+                                "num_outputs": self.numOutputs
                             ]
+                            
+                            print("Parameters being sent: \(parameters)")
+                            
+                            if let jsonData = try? JSONSerialization.data(withJSONObject: parameters, options: .prettyPrinted) {
+                                if let jsonString = String(data: jsonData, encoding: .utf8) {
+                                    print("JSON Payload: \n\(jsonString)")
+                                }
+                            }
 
                             NetworkManager.shared.createPrediction(model: self.selectedModel, parameters: parameters) { result in
                                 switch result {
@@ -2116,7 +2249,7 @@ class NetworkManager {
     private let modelConfigurations: [String: NetworkModelConfig] = [
         "Flux Pro": .standard(endpoint: "black-forest-labs/flux-pro"),
         "Flux Schnell": .standard(endpoint: "black-forest-labs/flux-schnell"),
-        "Flux Dev Inpainting": .standard(endpoint: "zsxkib/flux-dev-inpainting")
+        "Flux Dev Inpainting": .versioned(version: "ca8350ff748d56b3ebbd5a12bd3436c2214262a4ff8619de9890ecc41751a008")
     ]
     
     var currentPredictionId: String?

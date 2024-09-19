@@ -1483,7 +1483,8 @@ struct ContentView: View {
             outputQuality: outputQuality,
             disableSafetyChecker: disableSafetyChecker,
             imageUrl: selectedModel == "Flux Dev Inpainting" ? imageUrl : nil,
-            mask: selectedModel == "Flux Dev Inpainting" ? maskData : nil
+            mask: selectedModel == "Flux Dev Inpainting" ? maskData : nil,
+            generatedImage: nil
         )
         modelContext.insert(newHistory)
         try? modelContext.save()
@@ -1856,284 +1857,395 @@ struct PhotoGalleryView: View {
         .padding()
     }
 }
-
-struct ImageDetailView: View {
-    let imageEntity: GeneratedImage
-    @Environment(\.modelContext) var modelContext: ModelContext
-    @State private var showSaveStatus: Bool = false
-    @State private var selectedEditHistory: EditHistory? = nil
-    
-    var body: some View {
-        ScrollView {
-            VStack {
-                if let originalImage = UIImage(data: imageEntity.originalImageData) {
-                    Image(uiImage: originalImage)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(height: 300)
-                        .cornerRadius(10)
-                }
-                
-                // Display edited images if available
-                if let editedImageData = imageEntity.editedImageData, !editedImageData.isEmpty {
-                    ForEach(editedImageData.indices, id: \.self) { index in
-                        if let editedImage = UIImage(data: editedImageData[index]) {
-                            Image(uiImage: editedImage)
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                                .frame(height: 300)
-                                .cornerRadius(10)
-                                .onTapGesture {
-                                    // Show the details of this edit (inputs used in inpainting)
-                                    selectedEditHistory = imageEntity.editHistory?[index]
-                                }
-                        }
-                    }
-                }
-                
-                // Show detailed inpainting inputs if tapped on an edited image
-                if let selectedEditHistory = selectedEditHistory {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Inpainting Details")
-                            .font(.headline)
-                        Text("Prompt: \(selectedEditHistory.prompt)")
-                        Text("Mask URL: \(selectedEditHistory.maskUrl)")
-                        Text("Dimensions: \(selectedEditHistory.width)x\(selectedEditHistory.height)")
-                        Text("Strength: \(selectedEditHistory.strength)")
-                        Text("Guidance Scale: \(selectedEditHistory.guidanceScale)")
-                        Text("Output Quality: \(selectedEditHistory.outputQuality)")
-                        Text("Inference Steps: \(selectedEditHistory.numInferenceSteps)")
-                    }
-                    .padding()
-                }
-                
-                Spacer()
-            }
-            .padding()
-        }
-        .navigationTitle("Image Details")
-    }
-}
-
-
-struct InpaintingView: View {
-    var generatedImage: GeneratedImage
-    @Environment(\.modelContext) var modelContext: ModelContext
-    @Binding var isPresented: Bool
-    @State private var prompt: String = ""
-    @State private var maskUrl: String = ""
-    @State private var isLoading: Bool = false
-    @State private var errorMessage: String = ""
-    
-    var body: some View {
-        VStack {
-            Text("Inpainting Mode")
-                .font(.headline)
-            
-            TextField("Enter prompt", text: $prompt)
-                .textFieldStyle(RoundedBorderTextFieldStyle())
-                .padding()
-
-            TextField("Mask Image URL", text: $maskUrl)
-                .textFieldStyle(RoundedBorderTextFieldStyle())
-                .padding()
-            
-            Button(action: performInpainting) {
-                Text("Generate Inpainting")
-                    .padding()
-                    .background(Color.blue)
-                    .foregroundColor(.white)
-                    .cornerRadius(10)
-            }
-            .disabled(prompt.isEmpty || maskUrl.isEmpty)
-            .padding()
-            
-            if isLoading {
-                ProgressView("Generating Inpainting...")
-                    .padding()
-            }
-            
-            if !errorMessage.isEmpty {
-                Text("Error: \(errorMessage)")
-                    .foregroundColor(.red)
-                    .padding()
-            }
-        }
-        .padding()
-    }
-    
-    private func performInpainting() {
-        isLoading = true
-        let parameters: [String: Any] = [
-            "prompt": prompt,
-            "mask": maskUrl,
-            "image": "https://your.image.uri",  // You may need to provide the actual URI or load from GeneratedImage object
-            "width": 1024,
-            "height": 1024,
-            "strength": 1,
-            "num_outputs": 1,
-            "output_format": "webp",
-            "guidance_scale": 7,
-            "output_quality": 90,
-            "num_inference_steps": 30
-        ]
-        
-        NetworkManager.shared.createPrediction(model: "Flux Dev Inpainting", parameters: parameters) { result in
-            DispatchQueue.main.async {
-                isLoading = false
-                switch result {
-                case .success(let predictionId):
-                    self.trackInpainting(predictionId: predictionId)
-                case .failure(let error):
-                    self.errorMessage = error.localizedDescription
-                }
-            }
-        }
-    }
-    
-    private func trackInpainting(predictionId: String) {
-        NetworkManager.shared.getPredictionOutput(predictionId: predictionId, model: "Flux Dev Inpainting", context: modelContext) { result in
-            switch result {
-            case .success(let image):
-                if let imageData = image.jpegData(compressionQuality: 0.8) {
-                    // Save edited image and inpainting details in GeneratedImage
-                    var editHistory = generatedImage.editHistory ?? []
-                    let newHistory = EditHistory(
-                        prompt: prompt,
-                        maskUrl: maskUrl,
-                        width: 1024,
-                        height: 1024,
-                        strength: 1,
-                        numOutputs: 1,
-                        outputFormat: "webp",
-                        guidanceScale: 7,
-                        outputQuality: 90,
-                        numInferenceSteps: 30
-                    )
-                    editHistory.append(newHistory)
-                    
-                    var editedImages = generatedImage.editedImageData ?? []
-                    editedImages.append(imageData)
-                    
-                    generatedImage.editHistory = editHistory
-                    generatedImage.editedImageData = editedImages
-                    
-                    try? modelContext.save()
-                }
-                self.isPresented = false
-            case .failure(let error):
-                self.errorMessage = error.localizedDescription
-            }
-        }
-    }
-}
-
-
-
+//
 //struct ImageDetailView: View {
-//    let image: UIImage
 //    let imageEntity: GeneratedImage
 //    @Environment(\.modelContext) var modelContext: ModelContext
-//    @Environment(\.dismiss) var dismiss
-//    @State private var isDeleted: Bool = false
-//    @State private var showingSaveStatus: Bool = false
-//    @State private var saveStatusMessage: String = ""
+//    @State private var showSaveStatus: Bool = false
+//    @State private var selectedEditHistory: EditHistory? = nil
 //    
 //    var body: some View {
-//        GeometryReader { geometry in
-//            ZStack(alignment: .bottomTrailing) {
-//                Image(uiImage: image)
-//                    .resizable()
-//                    .aspectRatio(contentMode: .fit)
-//                    .frame(width: geometry.size.width, height: geometry.size.height)
-//                    .clipped()
+//        ScrollView {
+//            VStack {
+//                if let originalImage = UIImage(data: imageEntity.originalImageData) {
+//                    Image(uiImage: originalImage)
+//                        .resizable()
+//                        .aspectRatio(contentMode: .fit)
+//                        .frame(height: 300)
+//                        .cornerRadius(10)
+//                }
 //                
-//                if !isDeleted {
-//                    HStack(spacing: 20) {
-//                        Button(action: shareImage) {
-//                            Image(systemName: "square.and.arrow.up")
-//                                .foregroundColor(.white)
-//                                .padding(10)
-//                                .background(Color.black.opacity(0.6))
-//                                .clipShape(Circle())
+//                // Display edited images if available
+//                if let editedImageData = imageEntity.editedImageData, !editedImageData.isEmpty {
+//                    ForEach(editedImageData.indices, id: \.self) { index in
+//                        if let editedImage = UIImage(data: editedImageData[index]) {
+//                            Image(uiImage: editedImage)
+//                                .resizable()
+//                                .aspectRatio(contentMode: .fit)
+//                                .frame(height: 300)
+//                                .cornerRadius(10)
+//                                .onTapGesture {
+//                                    // Show the details of this edit (inputs used in inpainting)
+//                                    selectedEditHistory = imageEntity.editHistory?[index]
+//                                }
 //                        }
-//                        
-//                        Button(action: deleteImage) {
-//                            Image(systemName: "trash")
-//                                .foregroundColor(.white)
-//                                .padding(10)
-//                                .background(Color.red.opacity(0.6))
-//                                .clipShape(Circle())
-//                        }
+//                    }
+//                }
+//                
+//                // Show detailed inpainting inputs if tapped on an edited image
+//                if let selectedEditHistory = selectedEditHistory {
+//                    VStack(alignment: .leading, spacing: 10) {
+//                        Text("Inpainting Details")
+//                            .font(.headline)
+//                        Text("Prompt: \(selectedEditHistory.prompt)")
+//                        Text("Mask URL: \(selectedEditHistory.maskUrl)")
+//                        Text("Dimensions: \(selectedEditHistory.width)x\(selectedEditHistory.height)")
+//                        Text("Strength: \(selectedEditHistory.strength)")
+//                        Text("Guidance Scale: \(selectedEditHistory.guidanceScale)")
+//                        Text("Output Quality: \(selectedEditHistory.outputQuality)")
+//                        Text("Inference Steps: \(selectedEditHistory.numInferenceSteps)")
 //                    }
 //                    .padding()
 //                }
+//                
+//                Spacer()
 //            }
+//            .padding()
 //        }
-//        .overlay(
-//            Group {
-//                if showingSaveStatus {
-//                    Text(saveStatusMessage)
-//                        .padding()
-//                        .background(Color.black.opacity(0.7))
-//                        .foregroundColor(.white)
-//                        .cornerRadius(10)
-//                        .transition(.move(edge: .top).combined(with: .opacity))
-//                }
-//            }
-//        )
-//        .animation(.easeInOut, value: showingSaveStatus)
-//        .navigationBarTitleDisplayMode(.inline)
-//        .navigationBarBackButtonHidden()
-//        .toolbar {
-//            ToolbarItem(placement: .navigationBarLeading) {
-//                Button(action: {
-//                    dismiss()
-//                }) {
-//                    Image(systemName: "chevron.left")
-//                        .foregroundColor(.primary)
-//                }
-//            }
-//        }
-//        .tint(.primary)
+//        .navigationTitle("Image Details")
 //    }
+//}
+
+
+//struct InpaintingView: View {
+//    var generatedImage: GeneratedImage
+//    @Environment(\.modelContext) var modelContext: ModelContext
+//    @Binding var isPresented: Bool
+//    @State private var prompt: String = ""
+//    @State private var maskUrl: String = ""
+//    @State private var isLoading: Bool = false
+//    @State private var errorMessage: String = ""
 //    
-//    func shareImage() {
-//        let imageSaver = ImageSaver()
-//        if let jpegData = image.jpegData(compressionQuality: 0.8) {
-//            let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("shared_image.jpg")
-//            try? jpegData.write(to: tempURL)
+//    var body: some View {
+//        VStack {
+//            Text("Inpainting Mode")
+//                .font(.headline)
 //            
-//            let activityVC = UIActivityViewController(activityItems: [tempURL], applicationActivities: nil)
-//            UIApplication.shared.windows.first?.rootViewController?.present(activityVC, animated: true, completion: nil)
-//        } else {
-//            saveStatusMessage = "Error preparing image for sharing"
-//            showSaveStatus()
+//            TextField("Enter prompt", text: $prompt)
+//                .textFieldStyle(RoundedBorderTextFieldStyle())
+//                .padding()
+//
+//            TextField("Mask Image URL", text: $maskUrl)
+//                .textFieldStyle(RoundedBorderTextFieldStyle())
+//                .padding()
+//            
+//            Button(action: performInpainting) {
+//                Text("Generate Inpainting")
+//                    .padding()
+//                    .background(Color.blue)
+//                    .foregroundColor(.white)
+//                    .cornerRadius(10)
+//            }
+//            .disabled(prompt.isEmpty || maskUrl.isEmpty)
+//            .padding()
+//            
+//            if isLoading {
+//                ProgressView("Generating Inpainting...")
+//                    .padding()
+//            }
+//            
+//            if !errorMessage.isEmpty {
+//                Text("Error: \(errorMessage)")
+//                    .foregroundColor(.red)
+//                    .padding()
+//            }
 //        }
+//        .padding()
 //    }
 //    
-//    func deleteImage() {
-//        withAnimation {
-//            isDeleted = true
-//            modelContext.delete(imageEntity)
-//            try? modelContext.save()
-//            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-//                dismiss()
+//    private func performInpainting() {
+//        isLoading = true
+//        let parameters: [String: Any] = [
+//            "prompt": prompt,
+//            "mask": maskUrl,
+//            "image": "https://your.image.uri",  // You may need to provide the actual URI or load from GeneratedImage object
+//            "width": 1024,
+//            "height": 1024,
+//            "strength": 1,
+//            "num_outputs": 1,
+//            "output_format": "webp",
+//            "guidance_scale": 7,
+//            "output_quality": 90,
+//            "num_inference_steps": 30
+//        ]
+//        
+//        NetworkManager.shared.createPrediction(model: "Flux Dev Inpainting", parameters: parameters) { result in
+//            DispatchQueue.main.async {
+//                isLoading = false
+//                switch result {
+//                case .success(let predictionId):
+//                    self.trackInpainting(predictionId: predictionId)
+//                case .failure(let error):
+//                    self.errorMessage = error.localizedDescription
+//                }
 //            }
 //        }
 //    }
 //    
-//    func showSaveStatus() {
-//        withAnimation {
-//            showingSaveStatus = true
-//        }
-//        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-//            withAnimation {
-//                showingSaveStatus = false
+//    private func trackInpainting(predictionId: String) {
+//        NetworkManager.shared.getPredictionOutput(predictionId: predictionId, model: "Flux Dev Inpainting", context: modelContext) { result in
+//            switch result {
+//            case .success(let image):
+//                if let imageData = image.jpegData(compressionQuality: 0.8) {
+//                    // Save edited image and inpainting details in GeneratedImage
+//                    var editHistory = generatedImage.editHistory ?? []
+//                    let newHistory = EditHistory(
+//                        prompt: prompt,
+//                        maskUrl: maskUrl,
+//                        width: 1024,
+//                        height: 1024,
+//                        strength: 1,
+//                        numOutputs: 1,
+//                        outputFormat: "webp",
+//                        guidanceScale: 7,
+//                        outputQuality: 90,
+//                        numInferenceSteps: 30
+//                    )
+//                    editHistory.append(newHistory)
+//                    
+//                    var editedImages = generatedImage.editedImageData ?? []
+//                    editedImages.append(imageData)
+//                    
+//                    generatedImage.editHistory = editHistory
+//                    generatedImage.editedImageData = editedImages
+//                    
+//                    try? modelContext.save()
+//                }
+//                self.isPresented = false
+//            case .failure(let error):
+//                self.errorMessage = error.localizedDescription
 //            }
 //        }
 //    }
 //}
+
+import SwiftUI
+import SwiftData
+
+struct ImageDetailView: View {
+    @ObservedObject var imageEntity: GeneratedImage
+    @Environment(\.modelContext) var modelContext
+    @Environment(\.dismiss) var dismiss
+    @State private var isDeleted: Bool = false
+    @State private var showingSaveStatus: Bool = false
+    @State private var saveStatusMessage: String = ""
+    @State private var isShowingPromptHistory: Bool = false
+    @State private var isShowingEditHistory: Bool = false
+    
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .bottomTrailing) {
+                if let image = UIImage(data: imageEntity.originalImageData) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .clipped()
+                } else {
+                    Text("Image data is invalid")
+                        .foregroundColor(.red)
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                }
+                
+                if !isDeleted {
+                    VStack(alignment: .trailing, spacing: 15) {
+                        Button(action: shareImage) {
+                            Image(systemName: "square.and.arrow.up")
+                                .foregroundColor(.white)
+                                .padding(10)
+                                .background(Color.black.opacity(0.6))
+                                .clipShape(Circle())
+                        }
+                        
+                        Button(action: {
+                            isShowingPromptHistory.toggle()
+                        }) {
+                            Image(systemName: "clock.arrow.circlepath")
+                                .foregroundColor(.white)
+                                .padding(10)
+                                .background(Color.blue.opacity(0.6))
+                                .clipShape(Circle())
+                        }
+                        
+                        Button(action: {
+                            isShowingEditHistory.toggle()
+                        }) {
+                            Image(systemName: "pencil.circle")
+                                .foregroundColor(.white)
+                                .padding(10)
+                                .background(Color.green.opacity(0.6))
+                                .clipShape(Circle())
+                        }
+                        
+                        Button(action: deleteImage) {
+                            Image(systemName: "trash")
+                                .foregroundColor(.white)
+                                .padding(10)
+                                .background(Color.red.opacity(0.6))
+                                .clipShape(Circle())
+                        }
+                    }
+                    .padding()
+                }
+            }
+        }
+        .edgesIgnoringSafeArea(.all)
+        .sheet(isPresented: $isShowingPromptHistory) {
+            PromptHistoryView(promptHistories: imageEntity.promptHistory)
+        }
+        .sheet(isPresented: $isShowingEditHistory) {
+            EditHistoryView(editHistories: imageEntity.editHistory)
+        }
+        .overlay(
+            Group {
+                if showingSaveStatus {
+                    Text(saveStatusMessage)
+                        .padding()
+                        .background(Color.black.opacity(0.7))
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+        )
+        .animation(.easeInOut, value: showingSaveStatus)
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden()
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button(action: {
+                    dismiss()
+                }) {
+                    Image(systemName: "chevron.left")
+                        .foregroundColor(.primary)
+                }
+            }
+        }
+        .tint(.primary)
+    }
+    
+    func shareImage() {
+        if let image = UIImage(data: imageEntity.originalImageData) {
+            let activityVC = UIActivityViewController(activityItems: [image], applicationActivities: nil)
+            UIApplication.shared.windows.first?.rootViewController?.present(activityVC, animated: true, completion: nil)
+        } else {
+            saveStatusMessage = "Error loading image data"
+            showSaveStatus()
+        }
+    }
+    
+    func deleteImage() {
+        withAnimation {
+            isDeleted = true
+            modelContext.delete(imageEntity)
+            try? modelContext.save()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                dismiss()
+            }
+        }
+    }
+    
+    func showSaveStatus() {
+        withAnimation {
+            showingSaveStatus = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            withAnimation {
+                showingSaveStatus = false
+            }
+        }
+    }
+}
+
+struct PromptHistoryView: View {
+    let promptHistories: [PromptHistory]
+    @Environment(\.dismiss) var dismiss
+
+    var body: some View {
+        NavigationView {
+            List {
+                ForEach(promptHistories) { history in
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("Prompt: \(history.prompt)")
+                            .font(.headline)
+                        Text("Model: \(history.model)")
+                            .font(.subheadline)
+                        Text("Guidance: \(history.guidance)")
+                            .font(.subheadline)
+                        Text("Steps: \(history.steps)")
+                            .font(.subheadline)
+                        Text("Timestamp: \(history.timestamp.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.vertical, 5)
+                }
+            }
+            .navigationTitle("Prompt History")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Close") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+import SwiftUI
+
+struct EditHistoryView: View {
+    let editHistories: [EditHistory]
+    @Environment(\.dismiss) var dismiss
+
+    var body: some View {
+        NavigationView {
+            List {
+                ForEach(editHistories) { history in
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("Prompt: \(history.prompt)")
+                            .font(.headline)
+                        Text("Mask URL: \(history.maskUrl)")
+                            .font(.subheadline)
+                        Text("Dimensions: \(history.width)x\(history.height)")
+                            .font(.subheadline)
+                        Text("Strength: \(history.strength)")
+                            .font(.subheadline)
+                        Text("Guidance Scale: \(history.guidanceScale)")
+                            .font(.subheadline)
+                        Text("Inference Steps: \(history.numInferenceSteps)")
+                            .font(.subheadline)
+                        Text("Timestamp: \(history.timestamp.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.vertical, 5)
+                }
+            }
+            .navigationTitle("Edit History")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Close") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+
 
 class ImageSaver: NSObject {
     var successHandler: (() -> Void)?
@@ -2153,38 +2265,46 @@ class ImageSaver: NSObject {
 }
 
 @Model
-class GeneratedImage {
+class GeneratedImage: ObservableObject {
     @Attribute var id: UUID
     @Attribute var originalImageData: Data   // Store original image data
     @Attribute var editedImageData: [Data]?  // Store edited images
-    @Attribute var editHistory: [EditHistory]? // Store inpainting or other edit history
     @Attribute var timestamp: Date
 
+    // Relationships
+    @Relationship(deleteRule: .cascade) var editHistory: [EditHistory] = []
+    @Relationship(deleteRule: .cascade) var promptHistory: [PromptHistory] = []
+
+       
+    
     init(id: UUID = UUID(), originalImageData: Data, editedImageData: [Data]? = nil, editHistory: [EditHistory]? = nil, timestamp: Date = Date()) {
         self.id = id
         self.originalImageData = originalImageData
         self.editedImageData = editedImageData
-        self.editHistory = editHistory
+        self.editHistory = editHistory ?? []
         self.timestamp = timestamp
     }
 }
 
-@Model
-class EditHistory {
-    @Attribute var timestamp: Date
-    @Attribute var prompt: String
-    @Attribute var maskUrl: String
-    @Attribute var width: Int
-    @Attribute var height: Int
-    @Attribute var strength: Float
-    @Attribute var numOutputs: Int
-    @Attribute var outputFormat: String
-    @Attribute var guidanceScale: Float
-    @Attribute var outputQuality: Int
-    @Attribute var numInferenceSteps: Int
 
-    init(timestamp: Date = Date(), prompt: String, maskUrl: String, width: Int, height: Int, strength: Float, numOutputs: Int, outputFormat: String, guidanceScale: Float, outputQuality: Int, numInferenceSteps: Int) {
-        self.timestamp = timestamp
+@Model
+class EditHistory: ObservableObject {
+    var timestamp: Date = Date()
+    var prompt: String
+    var maskUrl: String
+    var width: Int
+    var height: Int
+    var strength: Float
+    var numOutputs: Int
+    var outputFormat: String
+    var guidanceScale: Float
+    var outputQuality: Int
+    var numInferenceSteps: Int
+    
+    // Relationship back to GeneratedImage
+    @Relationship(inverse: \GeneratedImage.editHistory) var generatedImage: GeneratedImage?
+    
+    init(prompt: String, maskUrl: String, width: Int, height: Int, strength: Float, numOutputs: Int, outputFormat: String, guidanceScale: Float, outputQuality: Int, numInferenceSteps: Int, generatedImage: GeneratedImage?) {
         self.prompt = prompt
         self.maskUrl = maskUrl
         self.width = width
@@ -2195,34 +2315,32 @@ class EditHistory {
         self.guidanceScale = guidanceScale
         self.outputQuality = outputQuality
         self.numInferenceSteps = numInferenceSteps
+        self.generatedImage = generatedImage
     }
 }
 
 
-import SwiftData
-import SwiftUI
-
-
 @Model
-class PromptHistory {
-    @Attribute var id: UUID
-    @Attribute var model: String
-    @Attribute var prompt: String
-    @Attribute var guidance: Double
-    @Attribute var aspectRatio: String?
-    @Attribute var steps: Double
-    @Attribute var interval: Double
-    @Attribute var safetyTolerance: Double
-    @Attribute var seed: Int?
-    @Attribute var outputFormat: String
-    @Attribute var outputQuality: Double
-    @Attribute var disableSafetyChecker: Bool
-    @Attribute var imageUrl: String?     // Optional image URL for inpainting
-    @Attribute var mask: Data?           // Optional mask for inpainting
-    @Attribute var timestamp: Date
-
-    init(id: UUID = UUID(), model: String, prompt: String, guidance: Double, aspectRatio: String? = nil, steps: Double, interval: Double, safetyTolerance: Double, seed: Int? = nil, outputFormat: String, outputQuality: Double, disableSafetyChecker: Bool, imageUrl: String? = nil, mask: Data? = nil, timestamp: Date = Date()) {
-        self.id = id
+class PromptHistory: ObservableObject {
+    var model: String
+    var prompt: String
+    var guidance: Double
+    var aspectRatio: String?
+    var steps: Double
+    var interval: Double
+    var safetyTolerance: Double
+    var seed: Int?
+    var outputFormat: String
+    var outputQuality: Double
+    var disableSafetyChecker: Bool
+    var imageUrl: String?     // Optional image URL for inpainting
+    var mask: Data?           // Optional mask for inpainting
+    var timestamp: Date = Date()
+    
+    // Relationship back to GeneratedImage
+    @Relationship(inverse: \GeneratedImage.promptHistory) var generatedImage: GeneratedImage?
+    
+    init(model: String, prompt: String, guidance: Double, aspectRatio: String? = nil, steps: Double, interval: Double, safetyTolerance: Double, seed: Int? = nil, outputFormat: String, outputQuality: Double, disableSafetyChecker: Bool, imageUrl: String? = nil, mask: Data? = nil, generatedImage: GeneratedImage?) {
         self.model = model
         self.prompt = prompt
         self.guidance = guidance
@@ -2236,9 +2354,10 @@ class PromptHistory {
         self.disableSafetyChecker = disableSafetyChecker
         self.imageUrl = imageUrl
         self.mask = mask
-        self.timestamp = timestamp
+        self.generatedImage = generatedImage
     }
 }
+
 
 class NetworkManager {
     static let shared = NetworkManager()

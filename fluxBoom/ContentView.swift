@@ -8,231 +8,6 @@
 import SwiftUI
 import SwiftData
 import Combine
-import UIKit
-
-struct Line: Identifiable {
-    var id = UUID()
-    var points: [CGPoint]
-    var color: Color
-    var lineWidth: CGFloat
-}
-
-struct DrawingMaskView: View {
-    @Binding var uploadedImage: UIImage?
-    @Binding var maskImage: UIImage?
-    @Binding var isDrawingMode: Bool
-    @Binding var lines: [Line]
-    @Binding var isEraserActive: Bool
-    var imageSize: CGSize
-    var onDrawEnd: () -> Void
-    var clearMask: () -> Void
-
-    @State private var scaleFactor: CGFloat = 1.0
-    @State private var imageAspectRatio: CGFloat = 1.0  // Set initial value
-
-    var body: some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .topTrailing) {
-                VStack(spacing: 0) {
-                    Spacer()
-
-                    // Image and Canvas
-                    ZStack {
-                        if let image = uploadedImage {
-                            // Calculate aspect ratio
-                            let aspectRatio = image.size.width / image.size.height
-                            
-                            // Calculate the display size based on available geometry
-                            let availableWidth = geometry.size.width
-                            let availableHeight = geometry.size.height * 0.8
-                            let fittedHeight = availableWidth / aspectRatio
-                            let fittedWidth = availableHeight * aspectRatio
-
-                            let displayWidth = fittedHeight <= availableHeight ? availableWidth : fittedWidth
-                            let displayHeight = fittedHeight <= availableHeight ? fittedHeight : fittedWidth / aspectRatio
-
-                            Image(uiImage: image)
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                                .frame(width: displayWidth, height: displayHeight)
-                                .clipped()
-                                .onAppear {
-                                    // Move the imageAspectRatio assignment here
-                                    imageAspectRatio = aspectRatio
-                                    calculateScaleFactor(image: image, displayWidth: displayWidth, displayHeight: displayHeight)
-                                    logImageDetails(image: image, size: imageSize)
-                                }
-
-                            // Canvas for drawing with adjusted size to match the image
-                            Canvas { context, size in
-                                let xScale = size.width / imageSize.width
-                                let yScale = size.height / imageSize.height
-
-                                for line in lines {
-                                    var path = Path()
-                                    if let firstPoint = line.points.first {
-                                        let mappedPoint = CGPoint(x: firstPoint.x * xScale, y: firstPoint.y * yScale)
-                                        path.move(to: mappedPoint)
-                                        for point in line.points.dropFirst() {
-                                            let mappedPoint = CGPoint(x: point.x * xScale, y: point.y * yScale)
-                                            path.addLine(to: mappedPoint)
-                                        }
-                                        context.stroke(path, with: .color(line.color.opacity(0.9)), lineWidth: line.lineWidth * xScale)
-                                    }
-                                }
-                            }
-                            .frame(width: displayWidth, height: displayHeight)
-                            .gesture(drawingGesture(displayWidth: displayWidth, displayHeight: displayHeight))
-                            .background(Color.clear)
-                        } else {
-                            Color.gray
-                                .frame(width: geometry.size.width, height: geometry.size.height * 0.8)
-                        }
-                    }
-
-                    Spacer()
-
-                    // Control Panel at Bottom (unchanged)
-                    HStack {
-                        // Eraser Toggle Button
-                        Button(action: {
-                            isEraserActive.toggle()
-                            print("Eraser toggled to: \(isEraserActive)") // Debugging
-                        }) {
-                            Image(systemName: isEraserActive ? "eraser.fill" : "pencil.tip")
-                                .font(.title)
-                                .foregroundColor(isEraserActive ? .red : .blue)
-                                .padding()
-                                .background(Color.black.opacity(0.5))
-                                .clipShape(Circle())
-                        }
-
-                        Spacer()
-
-                        // Clear Mask Button
-                        Button(action: {
-                            clearMask()
-                            print("Mask cleared") // Debugging
-                        }) {
-                            Image(systemName: "trash.fill")
-                                .font(.title)
-                                .foregroundColor(.white)
-                                .padding()
-                                .background(Color.black.opacity(0.5))
-                                .clipShape(Circle())
-                        }
-                    }
-                    .padding()
-                    .frame(height: 60)
-                    .background(Color.black.opacity(0.05)) // Optional: Semi-transparent background for controls
-                }
-
-                // Close Button at Top-Right Corner of the Screen
-                Button(action: {
-                    isDrawingMode = false
-                    print("Exiting drawing mode") // Debugging
-                }) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.title)
-                        .foregroundColor(.white)
-                        .padding(10)
-                        .background(Color.black.opacity(0.6))
-                        .clipShape(Circle())
-                }
-                .padding([.top, .trailing], 20)
-            }
-            .edgesIgnoringSafeArea(.all)
-        }
-    }
-
-    // Calculate scale factor based on image and display size
-    private func calculateScaleFactor(image: UIImage, displayWidth: CGFloat, displayHeight: CGFloat) {
-        let imagePixelWidth = image.size.width * image.scale
-        let displayPixelWidth = displayWidth * UIScreen.main.scale
-
-        scaleFactor = imagePixelWidth / displayPixelWidth
-        print("Scale Factor Calculated: \(scaleFactor)")
-    }
-
-
-    // Logging function to print image details
-    private func logImageDetails(image: UIImage, size: CGSize) {
-        let aspectRatio = size.width / size.height
-        print("Uploaded Image Size: \(size.width) x \(size.height)")
-        print("Uploaded Image Aspect Ratio: \(aspectRatio)")
-    }
-
-    // Convert image points to canvas points
-    private func convertPoint(_ point: CGPoint) -> CGPoint {
-        return CGPoint(x: point.x / scaleFactor, y: point.y / scaleFactor)
-    }
-
-    private func drawingGesture(displayWidth: CGFloat, displayHeight: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 0.1, coordinateSpace: .local)
-            .onChanged { value in
-                let location = value.location
-
-                // Map the touch point to the image coordinate system
-                let xScale = imageSize.width / displayWidth
-                let yScale = imageSize.height / displayHeight
-                let newPoint = CGPoint(x: location.x * xScale, y: location.y * yScale)
-
-                // Clamp the point within the image bounds
-                let clampedPoint = clampPoint(newPoint, within: imageSize)
-
-                if isEraserActive {
-                    erase(at: clampedPoint)
-                } else {
-                    if lines.isEmpty || lines.last?.points.isEmpty ?? true {
-                        // Start a new line
-                        lines.append(Line(points: [clampedPoint], color: .white, lineWidth: 40))
-                        print("Started new line with initial point: \(clampedPoint)")
-                    } else {
-                        // Continue adding to the last line
-                        if var lastLine = lines.popLast() {
-                            lastLine.points.append(clampedPoint)
-                            lines.append(lastLine)
-                            print("Added point to current line: \(clampedPoint)")
-                        }
-                    }
-                }
-            }
-            .onEnded { _ in
-                if !isEraserActive {
-                    onDrawEnd()
-                    print("Drawing ended")
-                }
-            }
-    }
-
-
-    // Erase Functionality
-    private func erase(at point: CGPoint) {
-        let eraseThreshold: CGFloat = 60.0 * scaleFactor
-        for i in 0..<lines.count {
-            lines[i].points.removeAll { p in
-                distance(from: p, to: point) < eraseThreshold
-            }
-        }
-        lines.removeAll { $0.points.isEmpty }
-        print("Erased at: \(point), remaining lines: \(lines.count)")
-    }
-
-    // Helper Function to Calculate Distance
-    private func distance(from: CGPoint, to: CGPoint) -> CGFloat {
-        let dx = from.x - to.x
-        let dy = from.y - to.y
-        return sqrt(dx * dx + dy * dy)
-    }
-
-    // Clamping Function
-    private func clampPoint(_ point: CGPoint, within size: CGSize) -> CGPoint {
-        let clampedX = min(max(point.x, 0), size.width)
-        let clampedY = min(max(point.y, 0), size.height)
-        return CGPoint(x: clampedX, y: clampedY)
-    }
-}
-
 
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext: ModelContext
@@ -253,10 +28,10 @@ struct ContentView: View {
     @State private var outputFormat: String = "webp"
     @State private var outputQuality: Double = 80
     @State private var disableSafetyChecker: Bool = false
-
+    
     @State private var strength: Int = 1
     @State private var numOutputs: Int = 1
-
+    
     
     // Flux Dev Inpainting specific inputs
     @State private var selectedImage: UIImage?
@@ -268,7 +43,7 @@ struct ContentView: View {
     @State private var isDrawingMode: Bool = false
     @State private var isEraserActive: Bool = false
     @State private var lines: [Line] = []
-
+    
     @FocusState private var isPromptFocused: Bool
     
     @State private var isLoading: Bool = false
@@ -292,14 +67,14 @@ struct ContentView: View {
     @State private var isFirstLaunch: Bool = true
     @State private var showDeleteConfirmation: Bool = false
     @State private var showClearConfirmation: Bool = false
-
+    
     let models = ["Flux Pro", "Flux Schnell", "Flux Dev Inpainting"]
     let aspectRatios = ["1:1", "16:9", "21:9", "2:3", "3:2", "4:5", "5:4", "9:16", "9:21"]
     let outputFormats = ["webp", "jpg", "png"]
     
     @State private var selectedTab: Int = 1 // Default to the second tab (Generate)
     @State private var showImagePicker: Bool = false
-
+    
     var body: some View {
         NavigationStack {
             VStack {
@@ -330,27 +105,27 @@ struct ContentView: View {
                                 }
                             }
                         }.padding()
-                        .tabItem {
-                            Text("Settings")
-                        }
-                        .tag(0)
+                            .tabItem {
+                                Text("Settings")
+                            }
+                            .tag(0)
                         
                         VStack {
-                                Spacer()
-                                if selectedModel == "Flux Dev Inpainting" {
-                                    devInpaintingView
-                                }
-                                if !isDrawingMode {
-                                    promptInput
-                                    generateButton
-                                        .padding(.top)
-                                }
+                            Spacer()
+                            if selectedModel == "Flux Dev Inpainting" {
+                                devInpaintingView
+                            }
+                            if !isDrawingMode {
+                                promptInput
+                                generateButton
+                                    .padding(.top)
+                            }
                             
                             if !errorMessage.isEmpty {
-                                    Text("Error: \(errorMessage)")
-                                        .foregroundColor(.red)
-                                        .padding()
-                                }
+                                Text("Error: \(errorMessage)")
+                                    .foregroundColor(.red)
+                                    .padding()
+                            }
                         }
                         .tabItem {
                             Text("Generate")
@@ -360,8 +135,8 @@ struct ContentView: View {
                         
                         VStack {
                             Text("History")
-                             .font(.title2.weight(.bold))
-                             .foregroundStyle(.secondary)
+                                .font(.title2.weight(.bold))
+                                .foregroundStyle(.secondary)
                             promptHistoryView
                         }
                         .tabItem {
@@ -375,7 +150,7 @@ struct ContentView: View {
                 Spacer()
             }
             .hideKeyboardOnTap()
-
+            
             .navigationDestination(isPresented: $navigateToGallery) {
                 PhotoGalleryView(generatedImages: generatedImages, modelContext: _modelContext)
             }
@@ -418,7 +193,7 @@ struct ContentView: View {
                     }
                 }
             }
-
+            
         }
         .sheet(isPresented: $showImagePicker) {
             ImagePicker(image: $selectedImage, errorMessage: $errorMessage)
@@ -466,7 +241,7 @@ struct ContentView: View {
                             .frame(maxHeight: 500) // Increased maxHeight for better visibility
                             .cornerRadius(10)
                             .padding(10)
-
+                        
                         // Display the mask image if it exists
                         if let mask = maskImage {
                             Image(uiImage: mask)
@@ -478,7 +253,7 @@ struct ContentView: View {
                                 .cornerRadius(10)
                                 .padding(10)
                         }
-
+                        
                         // Clear Button in Top-Right Corner
                         Button(action: {
                             clearImage()
@@ -519,7 +294,7 @@ struct ContentView: View {
                     }
                 }
             }
-
+            
             // Button to enter drawing mode
             if !isDrawingMode {
                 VStack {
@@ -539,9 +314,9 @@ struct ContentView: View {
             }
         }
     }
-
-
-
+    
+    
+    
     func clearImage() {
         selectedImage = nil
         fetchedImage = nil
@@ -560,19 +335,19 @@ struct ContentView: View {
         let rendererFormat = UIGraphicsImageRendererFormat()
         rendererFormat.scale = uploadedImage.scale
         rendererFormat.opaque = false
-
+        
         let renderer = UIGraphicsImageRenderer(size: uploadedImage.size, format: rendererFormat)
         let mask = renderer.image { context in
             // Fill background with black
             context.cgContext.setFillColor(UIColor.black.cgColor)
             context.cgContext.fill(CGRect(origin: .zero, size: uploadedImage.size))
-
+            
             // Draw the white lines (the mask) on top
             context.cgContext.setStrokeColor(UIColor.white.cgColor)
             context.cgContext.setLineWidth(40 / uploadedImage.scale) // Adjust line width
             context.cgContext.setLineCap(.round)
             context.cgContext.setLineJoin(.round)
-
+            
             for line in lines {
                 guard !line.points.isEmpty else { continue }
                 context.cgContext.beginPath()
@@ -583,7 +358,7 @@ struct ContentView: View {
                 context.cgContext.strokePath()
             }
         }
-
+        
         // Log the mask image size and aspect ratio
         let maskSize = mask.size
         let maskScale = mask.scale
@@ -593,16 +368,16 @@ struct ContentView: View {
         print("Generated Mask Scale: \(maskScale)")
         print("Generated Mask Pixel Size: \(maskPixelSize.width) x \(maskPixelSize.height) pixels")
         print("Generated Mask Aspect Ratio: \(maskAspectRatio)")
-
+        
         return mask
     }
-
-
+    
+    
     func clearMask() {
         lines.removeAll()
         maskImage = nil
     }
-
+    
     var fluxDevInpaintingInputs: some View {
         Group {
             // Output format picker
@@ -639,9 +414,9 @@ struct ContentView: View {
             }
         }
     }
-
-
-
+    
+    
+    
     var fluxProInputs: some View {
         Group {
             sliderInput(title: "Guidance:", value: $guidance, range: 2...5, step: 0.1)
@@ -650,7 +425,7 @@ struct ContentView: View {
             sliderInput(title: "Safety Tolerance:", value: $safetyTolerance, range: 1...5, step: 1)
         }
     }
-
+    
     var fluxSchnellInputs: some View {
         Group {
             HStack {
@@ -720,7 +495,7 @@ struct ContentView: View {
             }
         }
     }
-
+    
     
     func cancelPrediction() {
         guard let predictionId = NetworkManager.shared.currentPredictionId else { return }
@@ -795,7 +570,7 @@ struct ContentView: View {
                 }
                 Text("Image URL: \(promptHistory.imageUrl ?? "Not Provided")")
                     .font(.subheadline)
-
+                
                 if let maskData = promptHistory.mask, let uiImage = UIImage(data: maskData) {
                     Text("Mask Image:")
                         .font(.subheadline)
@@ -809,7 +584,7 @@ struct ContentView: View {
                     Text("Mask Image: Not Provided")
                         .font(.subheadline)
                 }
-
+                
                 Text("Output Format: \(promptHistory.outputFormat)")
                     .font(.subheadline)
                 if promptHistory.outputFormat != "png" {
@@ -841,7 +616,7 @@ struct ContentView: View {
         .padding()
         .presentationDetents([.fraction(0.5)])
     }
-
+    
     
     func loadPromptHistory(_ history: PromptHistory) {
         selectedModel = history.model
@@ -873,8 +648,8 @@ struct ContentView: View {
             }
         }
     }
-
-
+    
+    
     
     var loadingView: some View {
         VStack {
@@ -895,7 +670,7 @@ struct ContentView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-
+    
     var apiKeyModal: some View {
         VStack {
             Spacer()
@@ -936,8 +711,8 @@ struct ContentView: View {
         .presentationDetents([.fraction(0.5)])
         .edgesIgnoringSafeArea(.all)
     }
-
-
+    
+    
     var modelSelector: some View {
         HStack {
             if !isLoading {
@@ -982,7 +757,7 @@ struct ContentView: View {
         }
         .padding()
     }
-
+    
     var promptInput: some View {
         VStack {
             TextField("Enter prompt", text: $prompt, axis: .vertical)
@@ -1007,14 +782,14 @@ struct ContentView: View {
                 .padding()
         }
     }
-
-
+    
+    
     private var brightnessFactor: Double {
         let maxCharacters = 20.0
         let currentCharacters = Double(prompt.count)
         return min(currentCharacters / maxCharacters, 1.0)
     }
-
+    
     var generateButton: some View {
         Button(action: {
             withAnimation {
@@ -1032,7 +807,7 @@ struct ContentView: View {
             }
         })
     }
-
+    
     var promptHistoryView: some View {
         List {
             ForEach(promptHistory) { history in
@@ -1043,36 +818,36 @@ struct ContentView: View {
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                 }.transition(.scale(0))
-                .onTapGesture {
-                    selectedPromptHistory = history
-                    if isFirstLaunch {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                            isFirstLaunch = false
+                    .onTapGesture {
+                        selectedPromptHistory = history
+                        if isFirstLaunch {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                isFirstLaunch = false
+                            }
                         }
                     }
-                }
             }
         }
         .scrollContentBackground(.hidden)
         .background(.clear)
         .padding([.leading, .trailing, .bottom])
     }
-
+    
     func generateImage() {
         guard !prompt.isEmpty else {
             errorMessage = "Prompt cannot be empty."
             return
         }
-
+        
         guard isApiKeyValid else {
             errorMessage = "Please enter a valid API key."
             return
         }
-
+        
         isLoading = true
         predictionStatus = "Starting prediction..."
         errorMessage = ""
-
+        
         switch selectedModel {
         case "Flux Pro":
             var parameters: [String: Any] = ["prompt": prompt]
@@ -1080,7 +855,7 @@ struct ContentView: View {
             parameters["guidance"] = guidance
             parameters["interval"] = interval
             parameters["safety_tolerance"] = Int(safetyTolerance)
-
+            
             NetworkManager.shared.createPrediction(model: selectedModel, parameters: parameters) { result in
                 switch result {
                 case .success(let predictionId):
@@ -1092,7 +867,7 @@ struct ContentView: View {
                     }
                 }
             }
-
+            
         case "Flux Schnell":
             var parameters: [String: Any] = ["prompt": prompt]
             if let seed = seed {
@@ -1103,7 +878,7 @@ struct ContentView: View {
                 parameters["output_quality"] = Int(outputQuality)
             }
             parameters["disable_safety_checker"] = disableSafetyChecker
-
+            
             NetworkManager.shared.createPrediction(model: selectedModel, parameters: parameters) { result in
                 switch result {
                 case .success(let predictionId):
@@ -1115,10 +890,10 @@ struct ContentView: View {
                     }
                 }
             }
-
+            
         case "Flux Dev Inpainting":
-            let imageToUpload: UIImage?
-
+            var imageToUpload: UIImage?
+            
             if let selected = selectedImage {
                 imageToUpload = selected
             } else if let fetched = fetchedImage {
@@ -1128,26 +903,32 @@ struct ContentView: View {
                 isLoading = false
                 return
             }
-
+            
             // Ensure both image and mask have the same orientation and size
             if let imageToUpload = imageToUpload,
                let mask = maskImage {
-
-                // Convert the resized mask to black and white
+                
+                // Resize the image and mask
+                let maxDimension: CGFloat = 2048 // Adjust as needed
+                let resizedImage = resizeImageIfNeeded(image: imageToUpload, maxDimension: maxDimension)
                 if let blackAndWhiteMask = convertToBlackAndWhite(mask: mask) {
+                    // Convert the resized mask to black and white
+                    let resizedMask = resizeImageIfNeeded(image: blackAndWhiteMask, maxDimension: maxDimension)
+                    
+                    
                     
                     // Convert mask to PNG format
-                    if let maskPNGData = blackAndWhiteMask.pngData() {
+                    if let maskPNGData = resizedMask.pngData() {
                         
                         // Upload both the image and the mask to ImgBB
                         let dispatchGroup = DispatchGroup()
                         var imageURL: String?
                         var maskURL: String?
                         var uploadError: Error?
-
+                        
                         // Upload the main image
                         dispatchGroup.enter()
-                        uploadImageToImgBB(imageData: imageToUpload.jpegData(compressionQuality: 0.8)!) { result in
+                        uploadImageToImgBB(imageData: resizedImage.jpegData(compressionQuality: 0.8)!) { result in
                             switch result {
                             case .success(let url):
                                 imageURL = url
@@ -1156,7 +937,7 @@ struct ContentView: View {
                             }
                             dispatchGroup.leave()
                         }
-
+                        
                         // Upload the mask image
                         dispatchGroup.enter()
                         uploadImageToImgBB(imageData: maskPNGData) { result in
@@ -1168,40 +949,57 @@ struct ContentView: View {
                             }
                             dispatchGroup.leave()
                         }
-
+                        
                         dispatchGroup.notify(queue: .main) {
                             if let error = uploadError {
                                 self.errorMessage = "Upload error: \(error.localizedDescription)"
                                 self.isLoading = false
                                 return
                             }
-
+                            
                             guard let imageURL = imageURL else {
                                 self.errorMessage = "Failed to upload image."
                                 self.isLoading = false
                                 return
                             }
-
+                            
                             guard let maskURL = maskURL else {
                                 self.errorMessage = "Failed to upload mask image."
                                 self.isLoading = false
                                 return
                             }
-
-                            // Now send the prediction request with the uploaded URLs
+                            
+                            // Adjust width and height to multiples of 8
+                            let adjustedWidth = (Int(resizedImage.size.width) / 8) * 8
+                            let adjustedHeight = (Int(resizedImage.size.height) / 8) * 8
+                            
+                            // Adjust strength to 0.85
+                            let adjustedStrength: Float = 0.85
+                            
+                            // Usage after uploading
+                            fetchImageDimensions(from: imageURL) { width, height in
+                                print("Uploaded image dimensions: \(width)x\(height)")
+                            }
+                            fetchImageDimensions(from: maskURL) { width, height in
+                                print("Uploaded mask dimensions: \(width)x\(height)")
+                            }
+                            
+                            // Prepare the parameters
                             var parameters: [String: Any] = [
                                 "prompt": self.prompt,
                                 "image": imageURL,
                                 "mask": maskURL,
-                                "strength": self.strength,
-                                "width": Int(imageToUpload.size.width),
-                                "height": Int(imageToUpload.size.height),
+                                "strength": adjustedStrength,
+                                "width": adjustedWidth,
+                                "height": adjustedHeight,
                                 "output_format": self.outputFormat,
-                                "guidance_scale": self.guidance,
-                                "num_inference_steps": Int(self.steps),
-                                "num_outputs": self.numOutputs
+                                "guidance_scale": 7.0, // Adjusted to a standard value
+                                "num_inference_steps": 25,
+                                "num_outputs": self.numOutputs,
+                                "output_quality": self.outputQuality
                             ]
                             
+                            // Debugging prints
                             print("Parameters being sent: \(parameters)")
                             
                             if let jsonData = try? JSONSerialization.data(withJSONObject: parameters, options: .prettyPrinted) {
@@ -1209,7 +1007,8 @@ struct ContentView: View {
                                     print("JSON Payload: \n\(jsonString)")
                                 }
                             }
-
+                            
+                            // Send the prediction request
                             NetworkManager.shared.createPrediction(model: self.selectedModel, parameters: parameters) { result in
                                 switch result {
                                 case .success(let predictionId):
@@ -1238,6 +1037,27 @@ struct ContentView: View {
             isLoading = false
         }
     }
+    
+    
+    func resizeImageIfNeeded(image: UIImage, maxDimension: CGFloat) -> UIImage {
+        let width = image.size.width
+        let height = image.size.height
+
+        // Calculate new dimensions that are multiples of 64
+        let newWidth = CGFloat(Int(min(width, maxDimension) / 64) * 64)
+        let newHeight = CGFloat(Int(min(height, maxDimension) / 64) * 64)
+
+        let newSize = CGSize(width: newWidth, height: newHeight)
+
+        UIGraphicsBeginImageContextWithOptions(newSize, false, image.scale)
+        image.draw(in: CGRect(origin: .zero, size: newSize))
+        let resizedImage = UIGraphicsGetImageFromCurrentImageContext()
+        UIGraphicsEndImageContext()
+
+        return resizedImage ?? image
+    }
+
+    
     
     func uploadImageToImgBB(imageData: Data, completion: @escaping (Result<String, Error>) -> Void) {
         // Retrieve the API key from the Keychain
@@ -1294,7 +1114,7 @@ struct ContentView: View {
         
         task.resume()
     }
-
+    
     func createMultipartBody(with imageData: Data, boundary: String, apiKey: String) -> Data {
         var body = Data()
         
@@ -1315,69 +1135,59 @@ struct ContentView: View {
         
         return body
     }
-
-
+    
+    
     struct ImgBBUploadResponse: Codable {
         let data: ImgBBUploadData
     }
-
+    
     struct ImgBBUploadData: Codable {
         let url: String
     }
-
-    func resizeImage(_ image: UIImage, targetSize: CGSize) -> UIImage {
-        let size = image.size
-
-        let widthRatio  = targetSize.width  / size.width
-        let heightRatio = targetSize.height / size.height
-
-        // Determine the scale factor that preserves aspect ratio
-        let scaleFactor = min(widthRatio, heightRatio)
-
-        // Calculate the new size for the image
-        let scaledImageSize = CGSize(
-            width: size.width * scaleFactor,
-            height: size.height * scaleFactor
-        )
-
-        // Create a new UIGraphics context for the scaled image
-        UIGraphicsBeginImageContextWithOptions(targetSize, false, 0.0)
-        let origin = CGPoint(
-            x: (targetSize.width - scaledImageSize.width) / 2.0,
-            y: (targetSize.height - scaledImageSize.height) / 2.0
-        )
-        image.draw(in: CGRect(origin: origin, size: scaledImageSize))
-
-        // Extract the resized image from the context
+    
+    private func resizeImage(image: UIImage, targetSize: CGSize) -> UIImage {
+        UIGraphicsBeginImageContextWithOptions(targetSize, false, image.scale)
+        image.draw(in: CGRect(origin: .zero, size: targetSize))
         let resizedImage = UIGraphicsGetImageFromCurrentImageContext()
         UIGraphicsEndImageContext()
-
         return resizedImage ?? image
+    }
+    
+    func fetchImageDimensions(from urlString: String, completion: @escaping (Int, Int) -> Void) {
+        guard let url = URL(string: urlString) else { return }
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            if let data = data, let image = UIImage(data: data) {
+                completion(Int(image.size.width), Int(image.size.height))
+            } else {
+                print("Failed to fetch image dimensions.")
+            }
+        }.resume()
     }
 
 
+    
     func convertToBlackAndWhite(mask: UIImage) -> UIImage? {
         guard let cgImage = mask.cgImage else { return nil }
-
+        
         // Convert the image to grayscale
         let context = CIContext()
         let ciImage = CIImage(cgImage: cgImage)
-
+        
         // Apply a monochrome filter (grayscale conversion)
         let monochromeFilter = CIFilter(name: "CIColorMonochrome")!
         monochromeFilter.setValue(ciImage, forKey: kCIInputImageKey)
         monochromeFilter.setValue(CIColor(color: .white), forKey: "inputColor")
         monochromeFilter.setValue(1.0, forKey: "inputIntensity")
-
+        
         guard let outputImage = monochromeFilter.outputImage else {
             return nil
         }
-
+        
         // Render the grayscale image into a CGImage
         guard let cgMonochromeImage = context.createCGImage(outputImage, from: outputImage.extent) else {
             return nil
         }
-
+        
         // Create a bitmap context for thresholding
         let width = cgMonochromeImage.width
         let height = cgMonochromeImage.height
@@ -1385,7 +1195,7 @@ struct ContentView: View {
         let bytesPerRow = width
         let colorSpace = CGColorSpaceCreateDeviceGray()
         let bitmapInfo = CGImageAlphaInfo.none.rawValue
-
+        
         guard let contextRef = CGContext(
             data: nil,
             width: width,
@@ -1397,34 +1207,34 @@ struct ContentView: View {
         ) else {
             return nil
         }
-
+        
         contextRef.draw(cgMonochromeImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-
+        
         guard let pixelData = contextRef.data else { return nil }
         let threshold: UInt8 = 128  // Adjust threshold value (0-255)
-
+        
         for y in 0..<height {
             for x in 0..<width {
                 let pixelIndex = y * width + x
                 let pixel = pixelData.load(fromByteOffset: pixelIndex, as: UInt8.self)
-
+                
                 // Apply threshold: white if pixel is above the threshold, black if below
                 let newPixelValue: UInt8 = pixel < threshold ? 0 : 255
                 pixelData.storeBytes(of: newPixelValue, toByteOffset: pixelIndex, as: UInt8.self)
             }
         }
-
+        
         // Create a new CGImage from the thresholded pixel data
         guard let thresholdedCGImage = contextRef.makeImage() else { return nil }
-
+        
         // Convert the CGImage back to a UIImage and return as PNG format
         return UIImage(cgImage: thresholdedCGImage)
     }
-
-
-
-
-
+    
+    
+    
+    
+    
     func trackPrediction(predictionId: String) {
         DispatchQueue.global().async {
             var status: String = ""
@@ -1445,7 +1255,7 @@ struct ContentView: View {
                 }
                 sleep(2)
             } while status != "succeeded" && status != "failed"
-
+            
             DispatchQueue.main.async {
                 self.isLoading = false
                 if status == "succeeded" {
@@ -1467,7 +1277,7 @@ struct ContentView: View {
             }
         }
     }
-
+    
     func savePromptHistory() {
         let maskData = maskImage?.jpegData(compressionQuality: 0.8)
         let newHistory = PromptHistory(
@@ -1489,9 +1299,9 @@ struct ContentView: View {
         modelContext.insert(newHistory)
         try? modelContext.save()
     }
-
-
-
+    
+    
+    
     func sliderInput(title: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double) -> some View {
         VStack(alignment: .leading) {
             Text(title)
@@ -1503,8 +1313,8 @@ struct ContentView: View {
             }
         }
     }
-
-
+    
+    
     func loadApiKey() {
         if let storedKey = KeychainHelper.shared.retrieve(key: "apiKey") {
             apiKey = storedKey
@@ -1519,19 +1329,19 @@ struct ContentView: View {
         KeychainHelper.shared.save(imgbbApiKey, forKey: "imgbbApiKey")
         isApiKeyValid = validateApiKeys()
     }
-
-
+    
+    
     func validateApiKeys() -> Bool {
         return !apiKey.isEmpty && !imgbbApiKey.isEmpty
     }
-
-
+    
+    
     func resetSymbolPosition() {
         withAnimation(.spring()) {
             isSymbolAtFinalPosition = false
         }
     }
-
+    
     var keyboardToolbar: some View {
         VStack {
             Spacer()
@@ -1559,56 +1369,6 @@ struct ContentView: View {
         return imageData.base64EncodedString()
     }
 }
-
-struct ImagePicker: UIViewControllerRepresentable {
-    @Binding var image: UIImage?
-    @Binding var errorMessage: String // Changed to non-optional String
-
-    @Environment(\.presentationMode) private var presentationMode
-
-    func makeUIViewController(context: UIViewControllerRepresentableContext<ImagePicker>) -> UIImagePickerController {
-        let picker = UIImagePickerController()
-        picker.delegate = context.coordinator
-        return picker
-    }
-
-    func updateUIViewController(_ uiViewController: UIImagePickerController, context: UIViewControllerRepresentableContext<ImagePicker>) {}
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
-    }
-
-    class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
-        let parent: ImagePicker
-
-        init(_ parent: ImagePicker) {
-            self.parent = parent
-        }
-
-        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
-            if let image = info[.originalImage] as? UIImage {
-                if let imageData = image.jpegData(compressionQuality: 0.8) {
-                    let imageSizeInMB = Double(imageData.count) / (1024.0 * 1024.0)
-                    if imageSizeInMB <= 30.0 {
-                        parent.image = image
-                        parent.errorMessage = "" // Clear error if image is valid
-                    } else {
-                        parent.errorMessage = "Selected image exceeds 30MB."
-                    }
-                } else {
-                    parent.errorMessage = "Failed to process the selected image."
-                }
-            }
-            parent.presentationMode.wrappedValue.dismiss()
-        }
-
-        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
-            parent.presentationMode.wrappedValue.dismiss()
-        }
-    }
-}
-
-
 
 
 struct ContentView_Previews: PreviewProvider {
@@ -1640,7 +1400,7 @@ struct CustomSlider: View {
                     .onTapGesture {
                         dismissKeyboard() // Dismiss the keyboard when tapping outside
                     }
-
+                
                 
                 ZStack(alignment: .leading) {
                     GeometryReader { geometry in
@@ -1720,7 +1480,7 @@ struct CombinedSymbolView: View {
     var isLoading: Bool
     @Binding var prompt: String
     @State private var rotationAngle: Double = 0
-
+    
     var body: some View {
         ZStack {
             gradientOverlay
@@ -1762,7 +1522,7 @@ struct CombinedSymbolView: View {
             }
         }
     }
-
+    
     private var gradientOverlay: some View {
         LinearGradient(
             gradient: Gradient(colors: [.purple.opacity(brightnessFactor), .blue.opacity(brightnessFactor)]),
@@ -1770,13 +1530,13 @@ struct CombinedSymbolView: View {
             endPoint: .bottomTrailing
         )
     }
-
+    
     private var brightnessFactor: Double {
         let maxCharacters = 20.0
         let currentCharacters = Double(prompt.count)
         return isLoading ? 1.0 : min(currentCharacters / maxCharacters, 1.0)
     }
-
+    
     private func startAnimating() {
         let duration = isLoading ? 1.0 : (2.0 - brightnessFactor)
         withAnimation(Animation.linear(duration: duration).repeatForever(autoreverses: false)) {
@@ -1811,865 +1571,6 @@ extension Notification {
     }
 }
 
-
-
-import SwiftUI
-import SwiftData
-import UniformTypeIdentifiers
-
-struct PhotoGalleryView: View {
-    @State var generatedImages: [GeneratedImage]
-    @Environment(\.modelContext) var modelContext: ModelContext
-    @Environment(\.dismiss) var dismiss
-    @State private var selectedImage: GeneratedImage? = nil
-    @State private var isShowingHistory: Bool = false
-    
-    var body: some View {
-        ScrollView {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 100))], spacing: 10) {
-                ForEach(generatedImages) { image in
-                    if let uiImage = UIImage(data: image.originalImageData) {
-                        NavigationLink(destination: ImageDetailView(imageEntity: image, modelContext: _modelContext)) {
-                            Image(uiImage: uiImage)
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                                .frame(width: 100, height: 100)
-                                .clipped()
-                                .cornerRadius(10)
-                        }
-                    }
-                }
-            }
-        }
-        .navigationTitle("Gallery")
-        .navigationBarBackButtonHidden()
-        .toolbar {
-            ToolbarItem(placement: .navigationBarLeading) {
-                Button(action: {
-                    dismiss()
-                }) {
-                    Image(systemName: "chevron.left")
-                        .foregroundColor(.primary)
-                }
-            }
-        }
-        .tint(.primary)
-        .padding()
-    }
-}
-//
-//struct ImageDetailView: View {
-//    let imageEntity: GeneratedImage
-//    @Environment(\.modelContext) var modelContext: ModelContext
-//    @State private var showSaveStatus: Bool = false
-//    @State private var selectedEditHistory: EditHistory? = nil
-//    
-//    var body: some View {
-//        ScrollView {
-//            VStack {
-//                if let originalImage = UIImage(data: imageEntity.originalImageData) {
-//                    Image(uiImage: originalImage)
-//                        .resizable()
-//                        .aspectRatio(contentMode: .fit)
-//                        .frame(height: 300)
-//                        .cornerRadius(10)
-//                }
-//                
-//                // Display edited images if available
-//                if let editedImageData = imageEntity.editedImageData, !editedImageData.isEmpty {
-//                    ForEach(editedImageData.indices, id: \.self) { index in
-//                        if let editedImage = UIImage(data: editedImageData[index]) {
-//                            Image(uiImage: editedImage)
-//                                .resizable()
-//                                .aspectRatio(contentMode: .fit)
-//                                .frame(height: 300)
-//                                .cornerRadius(10)
-//                                .onTapGesture {
-//                                    // Show the details of this edit (inputs used in inpainting)
-//                                    selectedEditHistory = imageEntity.editHistory?[index]
-//                                }
-//                        }
-//                    }
-//                }
-//                
-//                // Show detailed inpainting inputs if tapped on an edited image
-//                if let selectedEditHistory = selectedEditHistory {
-//                    VStack(alignment: .leading, spacing: 10) {
-//                        Text("Inpainting Details")
-//                            .font(.headline)
-//                        Text("Prompt: \(selectedEditHistory.prompt)")
-//                        Text("Mask URL: \(selectedEditHistory.maskUrl)")
-//                        Text("Dimensions: \(selectedEditHistory.width)x\(selectedEditHistory.height)")
-//                        Text("Strength: \(selectedEditHistory.strength)")
-//                        Text("Guidance Scale: \(selectedEditHistory.guidanceScale)")
-//                        Text("Output Quality: \(selectedEditHistory.outputQuality)")
-//                        Text("Inference Steps: \(selectedEditHistory.numInferenceSteps)")
-//                    }
-//                    .padding()
-//                }
-//                
-//                Spacer()
-//            }
-//            .padding()
-//        }
-//        .navigationTitle("Image Details")
-//    }
-//}
-
-
-//struct InpaintingView: View {
-//    var generatedImage: GeneratedImage
-//    @Environment(\.modelContext) var modelContext: ModelContext
-//    @Binding var isPresented: Bool
-//    @State private var prompt: String = ""
-//    @State private var maskUrl: String = ""
-//    @State private var isLoading: Bool = false
-//    @State private var errorMessage: String = ""
-//    
-//    var body: some View {
-//        VStack {
-//            Text("Inpainting Mode")
-//                .font(.headline)
-//            
-//            TextField("Enter prompt", text: $prompt)
-//                .textFieldStyle(RoundedBorderTextFieldStyle())
-//                .padding()
-//
-//            TextField("Mask Image URL", text: $maskUrl)
-//                .textFieldStyle(RoundedBorderTextFieldStyle())
-//                .padding()
-//            
-//            Button(action: performInpainting) {
-//                Text("Generate Inpainting")
-//                    .padding()
-//                    .background(Color.blue)
-//                    .foregroundColor(.white)
-//                    .cornerRadius(10)
-//            }
-//            .disabled(prompt.isEmpty || maskUrl.isEmpty)
-//            .padding()
-//            
-//            if isLoading {
-//                ProgressView("Generating Inpainting...")
-//                    .padding()
-//            }
-//            
-//            if !errorMessage.isEmpty {
-//                Text("Error: \(errorMessage)")
-//                    .foregroundColor(.red)
-//                    .padding()
-//            }
-//        }
-//        .padding()
-//    }
-//    
-//    private func performInpainting() {
-//        isLoading = true
-//        let parameters: [String: Any] = [
-//            "prompt": prompt,
-//            "mask": maskUrl,
-//            "image": "https://your.image.uri",  // You may need to provide the actual URI or load from GeneratedImage object
-//            "width": 1024,
-//            "height": 1024,
-//            "strength": 1,
-//            "num_outputs": 1,
-//            "output_format": "webp",
-//            "guidance_scale": 7,
-//            "output_quality": 90,
-//            "num_inference_steps": 30
-//        ]
-//        
-//        NetworkManager.shared.createPrediction(model: "Flux Dev Inpainting", parameters: parameters) { result in
-//            DispatchQueue.main.async {
-//                isLoading = false
-//                switch result {
-//                case .success(let predictionId):
-//                    self.trackInpainting(predictionId: predictionId)
-//                case .failure(let error):
-//                    self.errorMessage = error.localizedDescription
-//                }
-//            }
-//        }
-//    }
-//    
-//    private func trackInpainting(predictionId: String) {
-//        NetworkManager.shared.getPredictionOutput(predictionId: predictionId, model: "Flux Dev Inpainting", context: modelContext) { result in
-//            switch result {
-//            case .success(let image):
-//                if let imageData = image.jpegData(compressionQuality: 0.8) {
-//                    // Save edited image and inpainting details in GeneratedImage
-//                    var editHistory = generatedImage.editHistory ?? []
-//                    let newHistory = EditHistory(
-//                        prompt: prompt,
-//                        maskUrl: maskUrl,
-//                        width: 1024,
-//                        height: 1024,
-//                        strength: 1,
-//                        numOutputs: 1,
-//                        outputFormat: "webp",
-//                        guidanceScale: 7,
-//                        outputQuality: 90,
-//                        numInferenceSteps: 30
-//                    )
-//                    editHistory.append(newHistory)
-//                    
-//                    var editedImages = generatedImage.editedImageData ?? []
-//                    editedImages.append(imageData)
-//                    
-//                    generatedImage.editHistory = editHistory
-//                    generatedImage.editedImageData = editedImages
-//                    
-//                    try? modelContext.save()
-//                }
-//                self.isPresented = false
-//            case .failure(let error):
-//                self.errorMessage = error.localizedDescription
-//            }
-//        }
-//    }
-//}
-
-import SwiftUI
-import SwiftData
-
-struct ImageDetailView: View {
-    @ObservedObject var imageEntity: GeneratedImage
-    @Environment(\.modelContext) var modelContext
-    @Environment(\.dismiss) var dismiss
-    @State private var isDeleted: Bool = false
-    @State private var showingSaveStatus: Bool = false
-    @State private var saveStatusMessage: String = ""
-    @State private var isShowingPromptHistory: Bool = false
-    @State private var isShowingEditHistory: Bool = false
-    
-    var body: some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .bottomTrailing) {
-                if let image = UIImage(data: imageEntity.originalImageData) {
-                    Image(uiImage: image)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(width: geometry.size.width, height: geometry.size.height)
-                        .clipped()
-                } else {
-                    Text("Image data is invalid")
-                        .foregroundColor(.red)
-                        .frame(width: geometry.size.width, height: geometry.size.height)
-                }
-                
-                if !isDeleted {
-                    VStack(alignment: .trailing, spacing: 15) {
-                        Button(action: shareImage) {
-                            Image(systemName: "square.and.arrow.up")
-                                .foregroundColor(.white)
-                                .padding(10)
-                                .background(Color.black.opacity(0.6))
-                                .clipShape(Circle())
-                        }
-                        
-                        Button(action: {
-                            isShowingPromptHistory.toggle()
-                        }) {
-                            Image(systemName: "clock.arrow.circlepath")
-                                .foregroundColor(.white)
-                                .padding(10)
-                                .background(Color.blue.opacity(0.6))
-                                .clipShape(Circle())
-                        }
-                        
-                        Button(action: {
-                            isShowingEditHistory.toggle()
-                        }) {
-                            Image(systemName: "pencil.circle")
-                                .foregroundColor(.white)
-                                .padding(10)
-                                .background(Color.green.opacity(0.6))
-                                .clipShape(Circle())
-                        }
-                        
-                        Button(action: deleteImage) {
-                            Image(systemName: "trash")
-                                .foregroundColor(.white)
-                                .padding(10)
-                                .background(Color.red.opacity(0.6))
-                                .clipShape(Circle())
-                        }
-                    }
-                    .padding()
-                }
-            }
-        }
-        .edgesIgnoringSafeArea(.all)
-        .sheet(isPresented: $isShowingPromptHistory) {
-            PromptHistoryView(promptHistories: imageEntity.promptHistory)
-        }
-        .sheet(isPresented: $isShowingEditHistory) {
-            EditHistoryView(editHistories: imageEntity.editHistory)
-        }
-        .overlay(
-            Group {
-                if showingSaveStatus {
-                    Text(saveStatusMessage)
-                        .padding()
-                        .background(Color.black.opacity(0.7))
-                        .foregroundColor(.white)
-                        .cornerRadius(10)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                }
-            }
-        )
-        .animation(.easeInOut, value: showingSaveStatus)
-        .navigationBarTitleDisplayMode(.inline)
-        .navigationBarBackButtonHidden()
-        .toolbar {
-            ToolbarItem(placement: .navigationBarLeading) {
-                Button(action: {
-                    dismiss()
-                }) {
-                    Image(systemName: "chevron.left")
-                        .foregroundColor(.primary)
-                }
-            }
-        }
-        .tint(.primary)
-    }
-    
-    func shareImage() {
-        if let image = UIImage(data: imageEntity.originalImageData) {
-            let activityVC = UIActivityViewController(activityItems: [image], applicationActivities: nil)
-            UIApplication.shared.windows.first?.rootViewController?.present(activityVC, animated: true, completion: nil)
-        } else {
-            saveStatusMessage = "Error loading image data"
-            showSaveStatus()
-        }
-    }
-    
-    func deleteImage() {
-        withAnimation {
-            isDeleted = true
-            modelContext.delete(imageEntity)
-            try? modelContext.save()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                dismiss()
-            }
-        }
-    }
-    
-    func showSaveStatus() {
-        withAnimation {
-            showingSaveStatus = true
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-            withAnimation {
-                showingSaveStatus = false
-            }
-        }
-    }
-}
-
-struct PromptHistoryView: View {
-    let promptHistories: [PromptHistory]
-    @Environment(\.dismiss) var dismiss
-
-    var body: some View {
-        NavigationView {
-            List {
-                ForEach(promptHistories) { history in
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("Prompt: \(history.prompt)")
-                            .font(.headline)
-                        Text("Model: \(history.model)")
-                            .font(.subheadline)
-                        Text("Guidance: \(history.guidance)")
-                            .font(.subheadline)
-                        Text("Steps: \(history.steps)")
-                            .font(.subheadline)
-                        Text("Timestamp: \(history.timestamp.formatted(date: .abbreviated, time: .shortened))")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    .padding(.vertical, 5)
-                }
-            }
-            .navigationTitle("Prompt History")
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Close") {
-                        dismiss()
-                    }
-                }
-            }
-        }
-    }
-}
-
-import SwiftUI
-
-struct EditHistoryView: View {
-    let editHistories: [EditHistory]
-    @Environment(\.dismiss) var dismiss
-
-    var body: some View {
-        NavigationView {
-            List {
-                ForEach(editHistories) { history in
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("Prompt: \(history.prompt)")
-                            .font(.headline)
-                        Text("Mask URL: \(history.maskUrl)")
-                            .font(.subheadline)
-                        Text("Dimensions: \(history.width)x\(history.height)")
-                            .font(.subheadline)
-                        Text("Strength: \(history.strength)")
-                            .font(.subheadline)
-                        Text("Guidance Scale: \(history.guidanceScale)")
-                            .font(.subheadline)
-                        Text("Inference Steps: \(history.numInferenceSteps)")
-                            .font(.subheadline)
-                        Text("Timestamp: \(history.timestamp.formatted(date: .abbreviated, time: .shortened))")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    .padding(.vertical, 5)
-                }
-            }
-            .navigationTitle("Edit History")
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Close") {
-                        dismiss()
-                    }
-                }
-            }
-        }
-    }
-}
-
-
-
-class ImageSaver: NSObject {
-    var successHandler: (() -> Void)?
-    var errorHandler: ((Error) -> Void)?
-    
-    func writeToPhotoAlbum(image: UIImage) {
-        UIImageWriteToSavedPhotosAlbum(image, self, #selector(saveComplete), nil)
-    }
-
-    @objc func saveComplete(_ image: UIImage, didFinishSavingWithError error: Error?, contextInfo: UnsafeRawPointer) {
-        if let error = error {
-            errorHandler?(error)
-        } else {
-            successHandler?()
-        }
-    }
-}
-
-@Model
-class GeneratedImage: ObservableObject {
-    @Attribute var id: UUID
-    @Attribute var originalImageData: Data   // Store original image data
-    @Attribute var editedImageData: [Data]?  // Store edited images
-    @Attribute var timestamp: Date
-
-    // Relationships
-    @Relationship(deleteRule: .cascade) var editHistory: [EditHistory] = []
-    @Relationship(deleteRule: .cascade) var promptHistory: [PromptHistory] = []
-
-       
-    
-    init(id: UUID = UUID(), originalImageData: Data, editedImageData: [Data]? = nil, editHistory: [EditHistory]? = nil, timestamp: Date = Date()) {
-        self.id = id
-        self.originalImageData = originalImageData
-        self.editedImageData = editedImageData
-        self.editHistory = editHistory ?? []
-        self.timestamp = timestamp
-    }
-}
-
-
-@Model
-class EditHistory: ObservableObject {
-    var timestamp: Date = Date()
-    var prompt: String
-    var maskUrl: String
-    var width: Int
-    var height: Int
-    var strength: Float
-    var numOutputs: Int
-    var outputFormat: String
-    var guidanceScale: Float
-    var outputQuality: Int
-    var numInferenceSteps: Int
-    
-    // Relationship back to GeneratedImage
-    @Relationship(inverse: \GeneratedImage.editHistory) var generatedImage: GeneratedImage?
-    
-    init(prompt: String, maskUrl: String, width: Int, height: Int, strength: Float, numOutputs: Int, outputFormat: String, guidanceScale: Float, outputQuality: Int, numInferenceSteps: Int, generatedImage: GeneratedImage?) {
-        self.prompt = prompt
-        self.maskUrl = maskUrl
-        self.width = width
-        self.height = height
-        self.strength = strength
-        self.numOutputs = numOutputs
-        self.outputFormat = outputFormat
-        self.guidanceScale = guidanceScale
-        self.outputQuality = outputQuality
-        self.numInferenceSteps = numInferenceSteps
-        self.generatedImage = generatedImage
-    }
-}
-
-
-@Model
-class PromptHistory: ObservableObject {
-    var model: String
-    var prompt: String
-    var guidance: Double
-    var aspectRatio: String?
-    var steps: Double
-    var interval: Double
-    var safetyTolerance: Double
-    var seed: Int?
-    var outputFormat: String
-    var outputQuality: Double
-    var disableSafetyChecker: Bool
-    var imageUrl: String?     // Optional image URL for inpainting
-    var mask: Data?           // Optional mask for inpainting
-    var timestamp: Date = Date()
-    
-    // Relationship back to GeneratedImage
-    @Relationship(inverse: \GeneratedImage.promptHistory) var generatedImage: GeneratedImage?
-    
-    init(model: String, prompt: String, guidance: Double, aspectRatio: String? = nil, steps: Double, interval: Double, safetyTolerance: Double, seed: Int? = nil, outputFormat: String, outputQuality: Double, disableSafetyChecker: Bool, imageUrl: String? = nil, mask: Data? = nil, generatedImage: GeneratedImage?) {
-        self.model = model
-        self.prompt = prompt
-        self.guidance = guidance
-        self.aspectRatio = aspectRatio
-        self.steps = steps
-        self.interval = interval
-        self.safetyTolerance = safetyTolerance
-        self.seed = seed
-        self.outputFormat = outputFormat
-        self.outputQuality = outputQuality
-        self.disableSafetyChecker = disableSafetyChecker
-        self.imageUrl = imageUrl
-        self.mask = mask
-        self.generatedImage = generatedImage
-    }
-}
-
-
-class NetworkManager {
-    static let shared = NetworkManager()
-    private init() {}
-    
-    private let baseUrl = "https://api.replicate.com/v1/predictions"
-    
-    private let modelConfigurations: [String: NetworkModelConfig] = [
-        "Flux Pro": .standard(endpoint: "black-forest-labs/flux-pro"),
-        "Flux Schnell": .standard(endpoint: "black-forest-labs/flux-schnell"),
-        "Flux Dev Inpainting": .versioned(version: "ca8350ff748d56b3ebbd5a12bd3436c2214262a4ff8619de9890ecc41751a008")
-    ]
-    
-    var currentPredictionId: String?
-    
-    func createPrediction(model: String, parameters: [String: Any], completion: @escaping (Result<String, Error>) -> Void) {
-        guard let apiKey = KeychainHelper.shared.retrieve(key: "apiKey") else {
-            completion(.failure(NSError(domain: "API Key Missing", code: 401, userInfo: nil)))
-            return
-        }
-        
-        guard let config = modelConfigurations[model] else {
-            completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid model"])))
-            return
-        }
-        
-        let url = config.endpointURL
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        // Prepare the JSON body
-        var finalParameters: [String: Any] = [:]
-        switch config {
-        case .standard:
-            finalParameters = ["input": parameters]
-        case .versioned(let version):
-            finalParameters = [
-                "version": version,
-                "input": parameters
-            ]
-        }
-        
-        guard let httpBody = try? JSONSerialization.data(withJSONObject: finalParameters, options: []) else {
-            completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to serialize parameters"])))
-            return
-        }
-        request.httpBody = httpBody
-        
-        let task = URLSession.shared.dataTask(with: request) { data, response, error in
-            if let error = error {
-                print("Create Prediction Error: \(error.localizedDescription)")
-                completion(.failure(error))
-                return
-            }
-            
-            guard let data = data, let httpResponse = response as? HTTPURLResponse else {
-                print("Create Prediction: No data or invalid response")
-                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data received"])))
-                return
-            }
-            
-            print("Create Prediction HTTP Status: \(httpResponse.statusCode)")
-            
-            do {
-                let decoder = JSONDecoder()
-                let predictionResponse = try decoder.decode(PredictionResponse.self, from: data)
-                
-                if let predictionId = predictionResponse.id {
-                    self.currentPredictionId = predictionId
-                    completion(.success(predictionId))
-                } else if let errorMessage = predictionResponse.detail {
-                    completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMessage])))
-                } else {
-                    completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response format"])))
-                }
-            } catch {
-                print("JSON parsing error: \(error.localizedDescription)")
-                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "JSON parsing error: \(error.localizedDescription)"])))
-            }
-        }
-        
-        task.resume()
-    }
-    
-    // Method to track the prediction status
-    func getPredictionStatus(predictionId: String, completion: @escaping (Result<String, Error>) -> Void) {
-        let url = URL(string: "https://api.replicate.com/v1/predictions/\(predictionId)")!
-        guard let apiKey = KeychainHelper.shared.retrieve(key: "apiKey") else {
-            completion(.failure(NSError(domain: "API Key Missing", code: 401, userInfo: nil)))
-            return
-        }
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        
-        let task = URLSession.shared.dataTask(with: request) { data, response, error in
-            if let error = error {
-                print("Get Prediction Status Error: \(error.localizedDescription)")
-                completion(.failure(error))
-                return
-            }
-            
-            guard let data = data, let httpResponse = response as? HTTPURLResponse else {
-                print("Get Prediction Status: No data or invalid response")
-                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data received"])))
-                return
-            }
-            
-            print("Get Prediction Status HTTP Status: \(httpResponse.statusCode)")
-            
-            do {
-                let decoder = JSONDecoder()
-                let statusResponse = try decoder.decode(PredictionResponse.self, from: data)
-                
-                if let status = statusResponse.status {
-                    completion(.success(status))
-                } else if let errorMessage = statusResponse.detail {
-                    completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMessage])))
-                } else {
-                    completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid status response format"])))
-                }
-            } catch {
-                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Status JSON parsing error: \(error.localizedDescription)"])))
-            }
-        }
-        
-        task.resume()
-    }
-    
-    func getPredictionOutput(predictionId: String, model: String, context: ModelContext, completion: @escaping (Result<UIImage, Error>) -> Void) {
-        let url = URL(string: "https://api.replicate.com/v1/predictions/\(predictionId)")!
-        guard let apiKey = KeychainHelper.shared.retrieve(key: "apiKey") else {
-            completion(.failure(NSError(domain: "API Key Missing", code: 401, userInfo: nil)))
-            return
-        }
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        
-        let task = URLSession.shared.dataTask(with: request) { data, response, error in
-            if let error = error {
-                print("Get Prediction Output Error: \(error.localizedDescription)")
-                DispatchQueue.main.async {
-                    completion(.failure(error))
-                }
-                return
-            }
-            
-            guard let data = data, let httpResponse = response as? HTTPURLResponse else {
-                print("Get Prediction Output: No data or invalid response")
-                DispatchQueue.main.async {
-                    completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data received"])))
-                }
-                return
-            }
-            
-            print("Get Prediction Output HTTP Status: \(httpResponse.statusCode)")
-            
-            do {
-                let decoder = JSONDecoder()
-                let outputResponse = try decoder.decode(PredictionResponse.self, from: data)
-                
-                // Extract the first output URL based on the Output enum
-                let outputUrlString: String?
-                switch outputResponse.output {
-                case .single(let urlString):
-                    outputUrlString = urlString
-                case .multiple(let urlArray):
-                    outputUrlString = urlArray.first
-                case .none:
-                    outputUrlString = nil
-                }
-                
-                if let outputUrlString = outputUrlString,
-                   let imageUrl = URL(string: outputUrlString) {
-                    
-                    DispatchQueue.global(qos: .userInitiated).async {
-                        if let imageData = try? Data(contentsOf: imageUrl),
-                           let image = UIImage(data: imageData) {
-                            
-                            DispatchQueue.main.async {
-                                let newImage = GeneratedImage(originalImageData: imageData)
-                                context.insert(newImage)
-                                do {
-                                    try context.save()
-                                    completion(.success(image))
-                                } catch {
-                                    completion(.failure(error))
-                                }
-                            }
-                        } else {
-                            DispatchQueue.main.async {
-                                self.handleOutputError(outputResponse, completion: completion)
-                            }
-                        }
-                    }
-                } else {
-                    DispatchQueue.main.async {
-                        self.handleOutputError(outputResponse, completion: completion)
-                    }
-                }
-            } catch {
-                DispatchQueue.main.async {
-                    completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Output JSON parsing error: \(error.localizedDescription)"])))
-                }
-            }
-        }
-        
-        task.resume()
-    }
-    
-    // Helper method to handle errors
-    func handleOutputError(_ jsonResponse: PredictionResponse, completion: @escaping (Result<UIImage, Error>) -> Void) {
-        if let errorMessage = jsonResponse.detail {
-            completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMessage])))
-        } else {
-            completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid output response format"])))
-        }
-    }
-    
-    // Method to cancel a prediction
-    func cancelPrediction(predictionId: String, completion: @escaping (Result<Void, Error>) -> Void) {
-        let url = URL(string: "https://api.replicate.com/v1/predictions/\(predictionId)/cancel")!
-        guard let apiKey = KeychainHelper.shared.retrieve(key: "apiKey") else {
-            completion(.failure(NSError(domain: "API Key Missing", code: 401, userInfo: nil)))
-            return
-        }
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        
-        let task = URLSession.shared.dataTask(with: request) { data, response, error in
-            if let error = error {
-                print("Cancel Prediction Error: \(error.localizedDescription)")
-                completion(.failure(error))
-                return
-            }
-            
-            guard let httpResponse = response as? HTTPURLResponse else {
-                print("Cancel Prediction: Invalid response")
-                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response received"])))
-                return
-            }
-            
-            print("Cancel Prediction HTTP Status: \(httpResponse.statusCode)")
-            
-            if (200...299).contains(httpResponse.statusCode) {
-                completion(.success(()))
-            } else {
-                completion(.failure(NSError(domain: "", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: "Failed to cancel prediction"])))
-            }
-        }
-        
-        task.resume()
-    }
-    
-    
-    func uploadToImgBB(apiKey: String, imageData: Data, name: String? = nil, completion: @escaping (Result<String, Error>) -> Void) {
-        guard let url = URL(string: "https://api.imgbb.com/1/upload") else {
-            completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"])))
-            return
-        }
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        
-        var bodyComponents = URLComponents()
-        bodyComponents.queryItems = [
-            URLQueryItem(name: "key", value: apiKey),
-            URLQueryItem(name: "image", value: imageData.base64EncodedString())
-        ]
-        if let name = name {
-            bodyComponents.queryItems?.append(URLQueryItem(name: "name", value: name))
-        }
-        
-        request.httpBody = bodyComponents.query?.data(using: .utf8)
-        
-        let task = URLSession.shared.dataTask(with: request) { data, response, error in
-            if let error = error {
-                completion(.failure(error))
-                return
-            }
-            
-            guard let data = data else {
-                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data received"])))
-                return
-            }
-            
-            do {
-                let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any]
-                if let dataDict = json?["data"] as? [String: Any], let url = dataDict["url"] as? String {
-                    completion(.success(url))
-                } else {
-                    completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response format"])))
-                }
-            } catch {
-                completion(.failure(error))
-            }
-        }
-        task.resume()
-    }
-}
-
-
-
-
 // MARK: - Extension for NavigationController
 
 extension UINavigationController: UIGestureRecognizerDelegate {
@@ -2677,87 +1578,9 @@ extension UINavigationController: UIGestureRecognizerDelegate {
         super.viewDidLoad()
         interactivePopGestureRecognizer?.delegate = self
     }
-
+    
     public func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         return viewControllers.count > 1
-    }
-}
-// MARK: - ModelConfiguration Enum
-
-enum NetworkModelConfig {
-    case standard(endpoint: String)
-    case versioned(version: String)
-    
-    var endpointURL: URL {
-        switch self {
-        case .standard(let endpoint):
-            return URL(string: "https://api.replicate.com/v1/models/\(endpoint)/predictions")!
-        case .versioned:
-            return URL(string: "https://api.replicate.com/v1/predictions")!
-        }
-    }
-    
-    var requiresVersion: Bool {
-        switch self {
-        case .versioned:
-            return true
-        case .standard:
-            return false
-        }
-    }
-}
-
-// MARK: - PredictionResponse Struct
-
-struct PredictionResponse: Codable {
-    let id: String?
-    let status: String?
-    let output: Output?
-    let detail: String?
-    
-}
-
-enum Output: Codable {
-    case single(String)
-    case multiple([String])
-    
-    init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        if let single = try? container.decode(String.self) {
-            self = .single(single)
-            return
-        }
-        if let multiple = try? container.decode([String].self) {
-            self = .multiple(multiple)
-            return
-        }
-        throw DecodingError.typeMismatch(Output.self, DecodingError.Context(codingPath: decoder.codingPath, debugDescription: "Expected String or [String] for output"))
-    }
-    
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        switch self {
-        case .single(let str):
-            try container.encode(str)
-        case .multiple(let arr):
-            try container.encode(arr)
-        }
-    }
-}
-
-extension Data {
-    mutating func appendString(_ string: String) {
-        if let data = string.data(using: .utf8) {
-            append(data)
-        }
-    }
-}
-
-extension Data {
-    mutating func append(_ string: String) {
-        if let data = string.data(using: .utf8) {
-            append(data)
-        }
     }
 }
 
